@@ -2,7 +2,7 @@ import React, { useState, useEffect, createContext, useContext, ReactNode, useRe
 import { 
   Plus, Search, ClipboardList, Edit, Trash2, User as UserIcon, Briefcase, History, 
   LayoutDashboard, Package, ShoppingCart, Users, Truck, LogOut, Menu, Barcode,
-  BarChart, Download, X, Check, AlertTriangle, Save, RefreshCw, ChevronDown, ChevronUp, Printer, FileText, ExternalLink, Camera, Video
+  BarChart, Download, X, Check, AlertTriangle, Save, RefreshCw, ChevronDown, ChevronUp, Printer, FileText, ExternalLink, Camera, Video, Bell
 } from 'lucide-react';
 import { 
   User, Product, Supplier, StockMovement, PurchaseOrder, Sale, AppState, SecurityAction, SaleItem
@@ -536,10 +536,15 @@ const Products = () => {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Fornecedor Principal</label>
                     <select name="supplierId" defaultValue={editingProduct?.supplierId} className="w-full border rounded-lg p-3 bg-white">
                         <option value="">Selecione...</option>
-                        {state.suppliers.map(s => (
+                        {state.suppliers
+                            .sort((a, b) => a.name.localeCompare(b.name))
+                            .map(s => (
                             <option key={s.id} value={s.id}>{s.name}</option>
                         ))}
                     </select>
+                    {state.suppliers.length === 0 && (
+                        <p className="text-xs text-red-500 mt-1">Nenhum fornecedor cadastrado. Cadastre em "Fornecedores".</p>
+                    )}
                 </div>
                 {!editingProduct && (
                      <div>
@@ -1899,7 +1904,7 @@ const Reports = () => {
 };
 
 const Dashboard = () => {
-    const { state, updateState, notify } = useAppContext();
+    const { state, updateState, notify, navigateTo } = useAppContext();
     const [analysis, setAnalysis] = useState<string>("");
     const [loading, setLoading] = useState(false);
 
@@ -1920,6 +1925,8 @@ const Dashboard = () => {
         linkElement.click();
     };
 
+    const lowStockItems = state.products.filter(p => p.qty <= p.minQty);
+
     return (
         <div className="space-y-6 animate-fade-in">
             <div className="flex justify-between items-center">
@@ -1930,6 +1937,28 @@ const Dashboard = () => {
                     </Button>
                 )}
             </div>
+
+            {lowStockItems.length > 0 && (
+                <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg mb-6 flex items-start justify-between animate-fade-in shadow-sm">
+                    <div>
+                         <h3 className="font-bold text-red-800 flex items-center gap-2">
+                            <AlertTriangle size={20} /> Atenção: Estoque Crítico
+                         </h3>
+                         <p className="text-sm text-red-700 mt-1">
+                            {lowStockItems.length} produto(s) estão abaixo do nível mínimo. Reposição necessária.
+                         </p>
+                         <ul className="mt-2 text-sm text-red-600 list-disc list-inside max-h-20 overflow-y-auto">
+                            {lowStockItems.slice(0, 3).map(p => (
+                                <li key={p.id}>{p.name} (Atual: {p.qty} / Mín: {p.minQty})</li>
+                            ))}
+                            {lowStockItems.length > 3 && <li>... e mais {lowStockItems.length - 3}</li>}
+                         </ul>
+                    </div>
+                    <Button variant="danger" className="text-sm px-3" onClick={() => navigateTo('purchases')}>
+                        Criar Pedido
+                    </Button>
+                </div>
+            )}
             
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-6 rounded-xl shadow-lg text-white">
@@ -2032,17 +2061,27 @@ const Login = () => {
 // --- App Layout & Provider ---
 
 const AppContent = () => {
-  const { state, logout } = useAppContext();
+  const { state, logout, notify } = useAppContext(); // Added notify
   const [currentView, setCurrentView] = useState('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Expose navigation to context via a hack (in a real app, use router)
   const { updateState } = useAppContext();
+
+  // Check for low stock on mount/update to send "Push" notification
   useEffect(() => {
-    // This effect is just to allow the context to drive navigation if needed,
-    // but React structure here prevents easy uplifting without refactor.
-    // We will pass `setCurrentView` down if needed or use a custom event.
-  }, []);
+    if (state.currentUser) {
+        const lowStockCount = state.products.filter(p => p.qty <= p.minQty).length;
+        if (lowStockCount > 0) {
+            // Simple check to avoid spamming if this runs too often, but for this demo:
+            // We delay it slightly so it appears after login
+            const timer = setTimeout(() => {
+                 notify(`Alerta: ${lowStockCount} produtos com estoque baixo ou zerado.`, 'error');
+            }, 1000);
+            return () => clearTimeout(timer);
+        }
+    }
+  }, [state.currentUser, state.products.length]); // Dependency ensures it runs on login or significant product changes
 
   if (!state.currentUser) return <Login />;
 
@@ -2204,7 +2243,7 @@ export default function App() {
 
   // Rewrite AppContent to accept the view state from parent
   const AppContentWrapper = () => {
-      const { state, logout } = useAppContext();
+      const { state, logout, notify } = useAppContext(); // Added notify to wrapper
       const [currentView, setCurrentView] = useState('dashboard');
       const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -2216,6 +2255,20 @@ export default function App() {
         window.addEventListener('app-navigation', handleNav);
         return () => window.removeEventListener('app-navigation', handleNav);
       }, []);
+
+      // Check for low stock on mount/update to send "Push" notification
+      useEffect(() => {
+        if (state.currentUser) {
+            const lowStockCount = state.products.filter(p => p.qty <= p.minQty).length;
+            if (lowStockCount > 0) {
+                // Delay slightly for better UX
+                const timer = setTimeout(() => {
+                     notify(`⚠️ Alerta: ${lowStockCount} produtos com estoque baixo ou zerado.`, 'error');
+                }, 1000);
+                return () => clearTimeout(timer);
+            }
+        }
+      }, [state.currentUser, state.products.length]); 
 
       if (!state.currentUser) return <Login />;
 
