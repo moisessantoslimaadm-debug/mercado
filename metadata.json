@@ -1,0 +1,7 @@
+{
+  "name": "MercadoFácil - Controle de Estoque",
+  "description": "Sistema completo de gestão para mercados brasileiros. Controle de produtos, fornecedores, compras e relatórios com inteligência artificial.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
