@@ -1,1898 +1,1101 @@
-import React, { useState, useEffect, createContext, useContext, ReactNode, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  Plus, Search, ClipboardList, Edit, Trash2, User as UserIcon, Briefcase, History, 
-  LayoutDashboard, Package, ShoppingCart, Users, Truck, LogOut, Menu, Barcode,
-  BarChart, Download, X, Check, AlertTriangle, Save, RefreshCw, ChevronDown, ChevronUp, Printer, FileText, ExternalLink, Camera, Video, Bell
+  AlertTriangle, Edit, Trash2, Plus, Search, Package, ShoppingCart, 
+  Truck, BarChart2, LogOut, Sparkles, Menu, X, User as UserIcon, 
+  Camera, Check, Printer, DollarSign, Archive, ShieldAlert, ChevronRight,
+  CreditCard, Banknote, QrCode, Settings, FileText, Upload, Download,
+  ArrowUpCircle, ArrowDownCircle, History, RefreshCcw, Save, Image as ImageIcon,
+  FileSpreadsheet, LayoutDashboard, TrendingUp, PieChart as PieChartIcon, Calendar, Filter,
+  RefreshCw
 } from 'lucide-react';
 import { 
-  User, Product, Supplier, StockMovement, PurchaseOrder, Sale, AppState, SecurityAction, SaleItem
-} from './types';
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, 
+  ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend 
+} from 'recharts';
 import { getAppState, saveAppState } from './services/storage';
 import { generateInventoryAnalysis } from './services/geminiService';
-import { formatDate, formatCurrency, CATEGORIES, UNITS } from './constants';
-import { BarChart as RechartsBar, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { AppState, Product, User, Sale, SaleItem, Supplier, StockMovement, PurchaseOrder } from './types';
+import { formatCurrency, formatDate, CATEGORIES, UNITS } from './constants';
 
-// --- Context & Types ---
+// --- HELPERS ---
 
-interface AppContextType {
-  state: AppState;
-  updateState: (newState: Partial<AppState>) => void;
-  notify: (message: string, type?: 'success' | 'error' | 'info') => void;
-  logSecurityAction: (action: SecurityAction, description: string, overrideUser?: string) => void;
-  logout: () => void;
-  playSound: (type: 'beep' | 'error' | 'success') => void;
-  navigateTo: (view: string) => void;
-}
+// Singleton AudioContext to prevent running out of hardware contexts
+let audioCtx: AudioContext | null = null;
 
-const AppContext = createContext<AppContextType | undefined>(undefined);
-
-const useAppContext = () => {
-  const context = useContext(AppContext);
-  if (!context) throw new Error("useAppContext must be used within AppProvider");
-  return context;
+const playBeep = () => {
+    try {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        }
+        // Resume context if suspended (browser policy)
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+        
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1200, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+    } catch (e) {
+        console.error("Audio context error", e);
+    }
 };
 
-// --- Helper Functions ---
+// --- COMPONENTS ---
 
-const playSound = (type: 'beep' | 'error' | 'success') => {
-    // In a real app, this would play audio files.
-    // For now we just log, but the structure is here.
-    console.log(`🔊 Playing sound: ${type}`);
-};
+const Toast = ({ message, type, onClose }: { message: string, type: 'success' | 'error' | 'warning', onClose: () => void }) => {
+  useEffect(() => {
+    const timer = setTimeout(onClose, 4000); // Increased duration slightly for better readability
+    return () => clearTimeout(timer);
+  }, [onClose]);
 
-// --- Helper Components ---
-
-const Button = ({ children, variant = 'primary', className = '', ...props }: any) => {
-  const baseStyle = "px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2 justify-center disabled:opacity-50 disabled:cursor-not-allowed";
-  const variants = {
-    primary: "bg-blue-600 text-white hover:bg-blue-700 shadow-sm",
-    secondary: "bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200",
-    danger: "bg-red-50 text-red-600 hover:bg-red-100 border border-red-100",
-    outline: "border-2 border-gray-300 text-gray-700 hover:border-gray-400 bg-transparent",
-    success: "bg-green-600 text-white hover:bg-green-700 shadow-sm"
+  const bgColors = {
+    success: 'bg-green-600', // Darker green for better visibility
+    error: 'bg-red-600',
+    warning: 'bg-orange-500'
   };
+
   return (
-    <button className={`${baseStyle} ${variants[variant as keyof typeof variants]} ${className}`} {...props}>
-      {children}
-    </button>
+    <div className={`fixed top-4 right-4 z-[60] ${bgColors[type]} text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-4 animate-fade-in transition-all transform hover:scale-105 max-w-sm border border-white/10`}>
+      <div className="bg-white/20 p-2 rounded-full">
+          {type === 'success' && <Check size={20} />}
+          {type === 'error' && <AlertTriangle size={20} />}
+          {type === 'warning' && <ShieldAlert size={20} />}
+      </div>
+      <span className="font-medium text-sm leading-tight">{message}</span>
+      <button onClick={onClose} className="ml-auto opacity-70 hover:opacity-100"><X size={18} /></button>
+    </div>
   );
 };
 
-const Modal = ({ isOpen, onClose, title, children, size = 'md' }: { isOpen: boolean; onClose: () => void; title: string | ReactNode; children?: ReactNode, size?: 'sm'|'md'|'lg'|'xl' }) => {
-  if (!isOpen) return null;
-  const sizes = { sm: 'max-w-sm', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-4xl' };
+const AlertBanner = ({ count, onClick }: { count: number, onClick: () => void }) => (
+  <div onClick={onClick} className="bg-red-50 border-l-4 border-red-500 p-4 mb-6 rounded-r-lg flex items-center justify-between cursor-pointer hover:bg-red-100 transition-colors shadow-sm">
+      <div className="flex items-center gap-3">
+          <div className="bg-red-100 p-2 rounded-full"><AlertTriangle className="text-red-600" size={20} /></div>
+          <div>
+              <p className="font-bold text-red-800">Atenção Necessária</p>
+              <p className="text-sm text-red-600">{count} produtos estão com estoque baixo ou zerado.</p>
+          </div>
+      </div>
+      <ChevronRight className="text-red-400" />
+  </div>
+);
+
+const CameraScanner = ({ onScan, onClose }: { onScan: (code: string) => void, onClose: () => void }) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [error, setError] = useState<string>('');
+  const [lastScanned, setLastScanned] = useState<string | null>(null);
   
+  const onScanRef = useRef(onScan);
+  useEffect(() => {
+    onScanRef.current = onScan;
+  }, [onScan]);
+
+  useEffect(() => {
+    let stream: MediaStream | null = null;
+    let interval: number;
+
+    const startCamera = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          if (!('BarcodeDetector' in window)) {
+             setError("Modo Simulação (API nativa ausente). Simulando leitura em 3s...");
+             setTimeout(() => { 
+                 if(!lastScanned) handleCodeDetected("7891234567890"); 
+             }, 3000);
+          } else {
+             // @ts-ignore
+             const barcodeDetector = new window.BarcodeDetector({ formats: ['ean_13', 'qr_code'] });
+             interval = window.setInterval(async () => {
+                if (videoRef.current) {
+                   try {
+                      const barcodes = await barcodeDetector.detect(videoRef.current);
+                      if (barcodes.length > 0) handleCodeDetected(barcodes[0].rawValue);
+                   } catch (e) { console.error(e); }
+                }
+             }, 300);
+          }
+        }
+      } catch (err) {
+        setError('Erro ao acessar câmera. Verifique permissões ou HTTPS.');
+      }
+    };
+
+    const handleCodeDetected = (code: string) => {
+        setLastScanned(prev => {
+            if (prev === code) return prev;
+            playBeep();
+            onScanRef.current(code);
+            setTimeout(() => setLastScanned(null), 2000);
+            return code;
+        });
+    };
+
+    startCamera();
+    return () => {
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      clearInterval(interval);
+    };
+  }, []); 
+
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
-      <div className={`bg-white rounded-xl shadow-2xl w-full ${sizes[size]} p-6 max-h-[90vh] overflow-y-auto flex flex-col`}>
-        <div className="flex justify-between items-center mb-6 border-b pb-4">
-          <h2 className="text-xl font-bold text-gray-800">{title}</h2>
-          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors"><X size={20} className="text-gray-500" /></button>
+    <div className="fixed inset-0 bg-black z-[70] flex flex-col items-center justify-center">
+      <div className="relative w-full max-w-md bg-black h-full flex flex-col">
+        <div className="absolute top-4 right-4 z-10">
+          <button onClick={onClose} className="p-2 bg-white/20 rounded-full text-white hover:bg-white/30"><X size={24} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto custom-scrollbar">
-            {children}
+        <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover opacity-80" />
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className={`w-64 h-48 border-4 ${lastScanned ? 'border-green-500 scale-105' : 'border-red-500'} rounded-lg transition-all duration-200 opacity-80 relative`}>
+                {!lastScanned && (
+                    <>
+                        <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-red-500 -mt-1 -ml-1"></div>
+                        <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-red-500 -mt-1 -mr-1"></div>
+                        <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-red-500 -mb-1 -ml-1"></div>
+                        <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-red-500 -mb-1 -mr-1"></div>
+                    </>
+                )}
+            </div>
+        </div>
+        <div className="absolute bottom-10 left-0 w-full text-center p-4">
+             <p className="text-white font-bold mb-2">{lastScanned ? `Lido: ${lastScanned}` : 'Aponte para o código de barras'}</p>
+            {error && <div className="text-white bg-red-600/80 p-2 rounded text-sm mx-4">{error}</div>}
         </div>
       </div>
     </div>
   );
 };
 
-const PinModal = ({ isOpen, onClose, onSuccess, title, description }: { isOpen: boolean; onClose: () => void; onSuccess: () => void; title: string, description?: string }) => {
-  const [pin, setPin] = useState('');
-  const { state, notify, playSound } = useAppContext();
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-      if (isOpen) {
-          setPin('');
-          setTimeout(() => inputRef.current?.focus(), 100);
-      }
-  }, [isOpen]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (pin === state.adminPin) {
-      playSound('success');
-      onSuccess();
-      setPin('');
-      onClose();
-    } else {
-      playSound('error');
-      notify("PIN incorreto. Acesso negado.", "error");
-      setPin('');
-    }
-  };
-
-  if (!isOpen) return null;
-
+const ReceiptModal = ({ sale, onClose }: { sale: Sale, onClose: () => void }) => {
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={title} size="sm">
-      <form onSubmit={handleSubmit} className="space-y-6 text-center">
-        <div className="bg-red-50 p-4 rounded-full w-16 h-16 flex items-center justify-center mx-auto">
-            <AlertTriangle className="text-red-500" size={32} />
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 animate-fade-in">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md flex flex-col max-h-[90vh]">
+        <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-lg">
+          <h2 className="font-bold text-gray-800 flex items-center gap-2"><Check className="text-green-500" /> Venda Realizada</h2>
+          <button onClick={onClose}><X size={20} className="text-gray-400 hover:text-gray-600" /></button>
         </div>
-        <div>
-            <p className="text-gray-600 font-medium">{description || "Esta ação requer autorização de gerente."}</p>
-            <p className="text-sm text-gray-400 mt-1">Entre com o PIN administrativo</p>
+        <div className="flex-1 overflow-y-auto p-6 bg-gray-100 flex justify-center">
+          <div id="receipt-print-area" className="bg-white p-4 w-80 shadow-sm text-xs font-mono border border-gray-200">
+            <div className="text-center mb-4">
+              <h1 className="text-lg font-bold">MERCADO FÁCIL</h1>
+              <p>Rua do Comércio, 123 - Centro</p>
+              <p>{formatDate(sale.date)}</p>
+              <p>Op: {sale.userName}</p>
+            </div>
+            <div className="border-b border-dashed border-gray-300 my-2"></div>
+            <div className="space-y-1">
+              {sale.items.map((item, idx) => (
+                <div key={idx} className="flex justify-between">
+                  <span className="truncate w-32">{item.productName}</span>
+                  <span>{item.qty}x {item.unitPrice.toFixed(2)}</span>
+                  <span className="font-bold">{item.total.toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+            <div className="border-b border-dashed border-gray-300 my-2"></div>
+            <div className="flex justify-between text-sm font-bold"><span>TOTAL</span><span>{formatCurrency(sale.totalValue)}</span></div>
+            <div className="flex justify-between text-xs mt-1"><span>Pagamento</span><span className="uppercase">{sale.paymentMethod}</span></div>
+            <div className="mt-6 text-center text-[10px] text-gray-500"><p>Obrigado pela preferência!</p><p>Volte sempre</p></div>
+          </div>
         </div>
-        <input
-          ref={inputRef}
-          type="password"
-          value={pin}
-          onChange={e => setPin(e.target.value)}
-          placeholder="••••"
-          className="w-full border-2 border-gray-200 rounded-xl p-4 text-center text-3xl tracking-[1em] focus:border-blue-500 outline-none transition-all"
-          maxLength={4}
-        />
-        <div className="grid grid-cols-2 gap-3">
-          <Button type="button" variant="secondary" onClick={onClose}>Cancelar</Button>
-          <Button type="submit" variant="danger">Autorizar</Button>
+        <div className="p-4 border-t bg-white rounded-b-lg flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2 text-gray-600 hover:bg-gray-100 rounded-lg font-medium">Fechar</button>
+          <button onClick={() => window.print()} className="flex-1 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2 font-medium shadow-md transition-all active:scale-95"><Printer size={18} /> Imprimir</button>
         </div>
-      </form>
-    </Modal>
+      </div>
+    </div>
   );
 };
 
-const CameraScanner = ({ onScan, onClose }: { onScan: (code: string) => void, onClose: () => void }) => {
-    const videoRef = useRef<HTMLVideoElement>(null);
-    const [error, setError] = useState<string>('');
-    const [lastCode, setLastCode] = useState<string>('');
-    const [lastTime, setLastTime] = useState(0);
-
-    useEffect(() => {
-        let stream: MediaStream | null = null;
-        let interval: any = null;
-
-        const startCamera = async () => {
-            try {
-                // Prefer rear camera
-                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-                if (videoRef.current) {
-                    videoRef.current.srcObject = stream;
-                    
-                    // Wait for metadata to ensure video is ready
-                    await new Promise((resolve) => {
-                         if (!videoRef.current) return resolve(false);
-                         videoRef.current.onloadedmetadata = () => {
-                            videoRef.current?.play();
-                            resolve(true);
-                         };
-                    });
-                    
-                    // Use BarcodeDetector if available (Chrome/Android)
-                    if ('BarcodeDetector' in window) {
-                         const BarcodeDetector = (window as any).BarcodeDetector;
-                         const detector = new BarcodeDetector({ formats: ['ean_13', 'code_128', 'qr_code', 'upc_a'] });
-                         
-                         interval = setInterval(async () => {
-                             if (videoRef.current && !videoRef.current.paused && !videoRef.current.ended) {
-                                 try {
-                                     const barcodes = await detector.detect(videoRef.current);
-                                     if (barcodes.length > 0) {
-                                         const raw = barcodes[0].rawValue;
-                                         // Debounce: Prevent reading the same code instantly
-                                         const now = Date.now();
-                                         // If it's a new code or 2 seconds passed since last read
-                                         if (raw !== lastCode || (now - lastTime > 2000)) {
-                                             onScan(raw);
-                                             setLastCode(raw);
-                                             setLastTime(now);
-                                         }
-                                     }
-                                 } catch (err) {
-                                     // Detection error (ignore frame)
-                                 }
-                             }
-                         }, 200);
-                    } else {
-                        setError("Navegador sem suporte a leitura nativa. Use o botão de simulação.");
-                    }
-                }
-            } catch (err) {
-                console.error(err);
-                setError("Acesso à câmera negado ou indisponível.");
-            }
-        };
-
-        startCamera();
-
-        return () => {
-            if (interval) clearInterval(interval);
-            if (stream) stream.getTracks().forEach(t => t.stop());
-        };
-    }, [onScan, lastCode, lastTime]);
-
-    // Update debounce state in effect (a bit tricky in strict mode, simplify using refs in production)
-    useEffect(() => {
-        setLastCode('');
-        setLastTime(0);
-    }, []);
-
+const PinModal = ({ onSubmit, onClose }: { onSubmit: (pin: string) => void, onClose: () => void }) => {
+    const [pin, setPin] = useState('');
     return (
-        <div className="fixed inset-0 bg-black/95 z-[60] flex flex-col items-center justify-center p-4 animate-fade-in">
-             <div className="w-full max-w-md bg-gray-900 rounded-2xl overflow-hidden border border-gray-700 relative shadow-2xl">
-                <div className="absolute top-4 left-4 z-10 bg-black/50 px-3 py-1 rounded-full text-white text-xs font-mono">
-                    REC ●
+        <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center animate-fade-in">
+            <div className="bg-white p-6 rounded-xl w-72 shadow-2xl animate-scale-in border-t-4 border-red-500">
+                <div className="flex justify-center mb-4 text-red-500"><ShieldAlert size={40} /></div>
+                <h3 className="text-center font-bold text-gray-800 mb-2">Autorização Necessária</h3>
+                <p className="text-center text-xs text-gray-500 mb-4">Insira a senha do Gerente</p>
+                <input type="password" autoFocus className="w-full text-center text-2xl tracking-widest border-2 border-gray-200 rounded-lg p-2 mb-4 focus:border-red-500 outline-none transition-colors" maxLength={4} value={pin} onChange={(e) => setPin(e.target.value)} />
+                <div className="flex gap-2">
+                    <button onClick={onClose} className="flex-1 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg font-medium text-gray-700">Cancelar</button>
+                    <button onClick={() => onSubmit(pin)} className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold shadow-md transition-all active:scale-95">Autorizar</button>
                 </div>
-                <button onClick={onClose} className="absolute top-4 right-4 z-10 bg-white/10 hover:bg-white/20 p-2 rounded-full text-white transition-colors">
-                    <X size={20} />
-                </button>
-                
-                <div className="relative aspect-[4/3] bg-black">
-                    <video ref={videoRef} className="w-full h-full object-cover" />
-                    {!error && (
-                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                            <div className="w-64 h-40 border-2 border-green-500/50 rounded-lg relative">
-                                <div className="absolute inset-0 border-t-2 border-green-400 animate-scan"></div>
-                                <div className="absolute bottom-2 left-0 w-full text-center text-green-400 text-xs font-mono">
-                                    APONTE PARA O CÓDIGO
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                    {error && (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900/90 text-white p-6 text-center">
-                            <AlertTriangle className="text-yellow-500 mb-2" size={32} />
-                            <p className="text-sm font-medium mb-4">{error}</p>
-                            <p className="text-xs text-gray-400">Em um dispositivo real compatível, a câmera abriria aqui.</p>
-                        </div>
-                    )}
-                </div>
-                
-                <div className="p-6 bg-gray-800 border-t border-gray-700">
-                     <p className="text-center text-gray-400 text-sm mb-4">
-                        Caso a câmera não leia, digite o código manualmente ou use o simulador.
-                     </p>
-                     <Button variant="secondary" onClick={() => onScan('7891234567890')} className="w-full">
-                        <Barcode size={16} /> Simular Leitura (Teste)
-                     </Button>
-                </div>
-             </div>
+            </div>
         </div>
     );
 };
 
-// --- Components ---
+// --- MAIN APP ---
 
-const BarcodeScannerMock = ({ onScan }: { onScan: (code: string) => void }) => {
-    const [code, setCode] = useState('');
-
-    const handleSimulate = (e: React.FormEvent) => {
-        e.preventDefault();
-        if(code) {
-            onScan(code);
-            setCode('');
-        }
-    };
-
-    return (
-        <div className="bg-gray-900 text-white p-4 rounded-lg mb-4">
-            <p className="text-xs text-gray-400 mb-2 font-mono uppercase tracking-wider">Simulador de Scanner USB</p>
-            <form onSubmit={handleSimulate} className="flex gap-2">
-                <input 
-                    value={code}
-                    onChange={e => setCode(e.target.value)}
-                    placeholder="Digite ou cole um EAN..."
-                    className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500 font-mono"
-                />
-                <button type="submit" className="bg-blue-600 px-3 py-2 rounded text-sm hover:bg-blue-500">
-                    OK
-                </button>
-            </form>
-        </div>
-    );
-};
-
-const Products = () => {
-  const { state, updateState, notify, logSecurityAction } = useAppContext();
-  const [isModalOpen, setIsModalOpen] = useState(false);
+export default function App() {
+  const [state, setState] = useState<AppState>(getAppState());
+  const [activeTab, setActiveTab] = useState('dashboard'); 
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [toast, setToast] = useState<{msg: string, type: 'success' | 'error' | 'warning'} | null>(null);
+  const [showPinModal, setShowPinModal] = useState<{action: string, payload?: any} | null>(null);
+  
+  // Modals State
+  const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [previewImage, setPreviewImage] = useState<string>(''); // Image Preview State
+  const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
+  const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
+  const [isAdjustmentModalOpen, setIsAdjustmentModalOpen] = useState(false);
+  const [adjustingProduct, setAdjustingProduct] = useState<Product | null>(null);
+  const [adjustmentType, setAdjustmentType] = useState<'in' | 'out' | 'adjustment'>('in');
+  
+  // Purchase Modal State (Optimized)
+  const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
+  const [preSelectedSupplierId, setPreSelectedSupplierId] = useState<string>('');
+
+  const [viewingHistoryProduct, setViewingHistoryProduct] = useState<Product | null>(null);
+  
+  // Data State
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState('');
-  const [pinModalOpen, setPinModalOpen] = useState(false);
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [filterCategory, setFilterCategory] = useState('');
+  const [supplierSearch, setSupplierSearch] = useState('');
+  const [aiAnalysis, setAiAnalysis] = useState<string>('');
+  const [isLoadingAi, setIsLoadingAi] = useState(false);
+  
+  // POS State
+  const [cart, setCart] = useState<SaleItem[]>([]);
+  const [posSearch, setPosSearch] = useState('');
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [lastSale, setLastSale] = useState<Sale | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'cash'|'credit'|'debit'|'pix'>('cash');
+  const posInputRef = useRef<HTMLInputElement>(null);
 
-  const isAdmin = state.currentUser?.role === 'admin';
+  useEffect(() => { saveAppState(state); }, [state]);
 
-  const handleSave = (e: React.FormEvent<HTMLFormElement>) => {
+  const showToast = (msg: string, type: 'success' | 'error' | 'warning') => setToast({ msg, type });
+
+  // Permissions Helper
+  const canEditPrices = state.currentUser?.role === 'admin';
+  const canDelete = state.currentUser?.role === 'admin';
+  const canManageSettings = state.currentUser?.role === 'admin';
+
+  // --- ACTIONS ---
+
+  const handleLogin = (user: User) => {
+      setState(prev => ({ ...prev, currentUser: user }));
+      setActiveTab('dashboard'); // Reset tab on login
+  };
+  const handleLogout = () => setState(prev => ({ ...prev, currentUser: null }));
+
+  const generateEAN = () => '789' + Date.now().toString().slice(-10);
+
+  const openPurchaseForSupplier = (supplierId: string) => {
+      setPreSelectedSupplierId(supplierId);
+      setIsPurchaseModalOpen(true);
+  };
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+              setPreviewImage(reader.result as string);
+          };
+          reader.readAsDataURL(file);
+      }
+  };
+
+  const handleSaveProduct = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     
-    const isEditing = !!editingProduct;
-    const id = isEditing ? editingProduct.id : Date.now().toString();
+    // Resolve Prices to check validation
+    const currentCost = editingProduct ? editingProduct.costPrice : 0;
+    const currentSell = editingProduct ? editingProduct.sellPrice : 0;
+    
+    // Get values from form if editable, otherwise use current state
+    const costPrice = canEditPrices ? Number(formData.get('costPrice')) : currentCost;
+    const sellPrice = canEditPrices ? Number(formData.get('sellPrice')) : currentSell;
+    const minQty = Number(formData.get('minQty'));
+    
+    // --- VALIDATIONS ---
+    
+    // 1. Min Qty Validation
+    if (minQty < 0 || isNaN(minQty)) {
+        showToast('Quantidade mínima não pode ser negativa.', 'error');
+        return;
+    }
 
-    const product: Product = {
-      id,
+    // 2. Price Positivity Validation
+    if (costPrice < 0 || sellPrice < 0) {
+        showToast('Os preços não podem ser negativos.', 'error');
+        return;
+    }
+
+    // 3. Profit Validation (Sell > Cost)
+    if (sellPrice <= costPrice) {
+        showToast('O preço de venda deve ser maior que o preço de custo.', 'error');
+        return;
+    }
+
+    // 4. Initial Stock Validation (New Products)
+    if (!editingProduct) {
+        const initialQty = Number(formData.get('qty'));
+        if (initialQty < 0 || isNaN(initialQty)) {
+            showToast('Estoque inicial não pode ser negativo.', 'error');
+            return;
+        }
+        if (initialQty > 99999) {
+            showToast('Quantidade inicial excede o limite permitido.', 'error');
+            return;
+        }
+    }
+
+    // --- PROCESS ---
+
+    const imageFile = formData.get('imageFile') as File;
+    let imageUrl = editingProduct?.imageUrl || '';
+    
+    if (previewImage) {
+        imageUrl = previewImage;
+    } else if (imageFile && imageFile.size > 0) {
+        const reader = new FileReader();
+        reader.readAsDataURL(imageFile);
+        await new Promise(resolve => reader.onload = () => { imageUrl = reader.result as string; resolve(true); });
+    }
+
+    const productData: Product = {
+      id: editingProduct ? editingProduct.id : Date.now().toString(),
       name: formData.get('name') as string,
       category: formData.get('category') as string,
       sku: formData.get('sku') as string,
-      barcode: formData.get('barcode') as string,
-      qty: isEditing ? editingProduct.qty : Number(formData.get('qty')), // Qty managed by movements
-      minQty: Number(formData.get('minQty')),
-      costPrice: Number(formData.get('costPrice')),
-      sellPrice: Number(formData.get('sellPrice')),
+      barcode: (formData.get('barcode') as string) || generateEAN(),
+      qty: editingProduct ? editingProduct.qty : Number(formData.get('qty')),
+      minQty: minQty,
+      costPrice: costPrice,
+      sellPrice: sellPrice,
       unit: formData.get('unit') as string,
       supplierId: formData.get('supplierId') as string,
-      imageUrl: formData.get('imageUrl') as string || undefined,
+      imageUrl
     };
 
-    let updatedProducts = [...state.products];
-    if (isEditing) {
-      updatedProducts = updatedProducts.map(p => p.id === id ? product : p);
-      notify("Produto atualizado!", "success");
-    } else {
-      updatedProducts.push(product);
-      if (product.qty > 0) {
-        const movement: StockMovement = {
-            id: Date.now().toString(),
-            productId: product.id,
-            type: 'in',
-            qty: product.qty,
-            date: new Date().toISOString(),
-            userId: state.currentUser?.id || 'sys',
-            userName: state.currentUser?.name || 'Sistema',
-            observation: 'Estoque inicial'
-        };
-        updateState({ products: updatedProducts, movements: [...state.movements, movement] });
-        setIsModalOpen(false);
-        setEditingProduct(null);
-        return;
+    setState(prev => {
+      const newProducts = editingProduct 
+        ? prev.products.map(p => p.id === editingProduct.id ? productData : p)
+        : [...prev.products, productData];
+      
+      let newMovements = prev.movements;
+      if (!editingProduct && productData.qty > 0) {
+          newMovements = [...prev.movements, {
+              id: Date.now().toString(), productId: productData.id, type: 'in', qty: productData.qty,
+              date: new Date().toISOString(), userId: state.currentUser!.id, userName: state.currentUser!.name, observation: 'Estoque Inicial'
+          }];
       }
-      notify("Produto cadastrado!", "success");
-    }
-
-    updateState({ products: updatedProducts });
-    setIsModalOpen(false);
-    setEditingProduct(null);
-  };
-
-  const initiateDelete = (id: string) => {
-    setPendingDeleteId(id);
-    setPinModalOpen(true);
-  };
-
-  const confirmDelete = () => {
-      if (pendingDeleteId) {
-          const p = state.products.find(prod => prod.id === pendingDeleteId);
-          updateState({ products: state.products.filter(prod => prod.id !== pendingDeleteId) });
-          logSecurityAction('delete_product', `Produto excluído: ${p?.name}`);
-          notify("Produto removido.", "info");
-          setPendingDeleteId(null);
-      }
-  };
-
-  const filteredProducts = state.products.filter(p => 
-    (selectedCategory === '' || p.category === selectedCategory) &&
-    (p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    p.barcode.includes(searchTerm) ||
-    p.sku.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
-
-  return (
-    <div className="space-y-6 animate-fade-in">
-       <PinModal isOpen={pinModalOpen} onClose={() => setPinModalOpen(false)} onSuccess={confirmDelete} title="Excluir Produto" />
-       
-       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-            <h1 className="text-2xl font-bold text-gray-800">Catálogo de Produtos</h1>
-            <p className="text-gray-500 text-sm">Gerencie preços, códigos e fornecedores.</p>
-        </div>
-        {isAdmin && (
-          <Button onClick={() => { setEditingProduct(null); setIsModalOpen(true); }}>
-            <Plus size={20} /> Novo Produto
-          </Button>
-        )}
-      </div>
-
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row gap-4">
-          <div className="relative flex-1">
-            <input 
-                type="text" 
-                placeholder="Buscar por nome, código de barras ou SKU..." 
-                className="w-full pl-10 pr-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-            />
-            <Search className="absolute left-3 top-3.5 text-gray-400" size={20} /> 
-          </div>
-          <select 
-            className="p-3 border rounded-lg bg-white min-w-[200px]"
-            value={selectedCategory}
-            onChange={(e) => setSelectedCategory(e.target.value)}
-          >
-              <option value="">Todas as Categorias</option>
-              {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="overflow-x-auto">
-            <table className="w-full text-left">
-                <thead className="bg-gray-50 text-gray-600 border-b">
-                    <tr>
-                        <th className="p-4">Produto</th>
-                        <th className="p-4 text-center">Categoria</th>
-                        <th className="p-4 text-center">Estoque</th>
-                        <th className="p-4 text-right">Preço</th>
-                        <th className="p-4 text-right">Margem</th>
-                        <th className="p-4 text-center">Ações</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y text-sm">
-                    {filteredProducts.map(p => {
-                        const isZeroStock = p.qty === 0;
-                        const isLowStock = p.qty <= p.minQty;
-                        const margin = ((p.sellPrice - p.costPrice) / p.sellPrice) * 100;
-                        
-                        let rowClass = "hover:bg-gray-50 transition-colors border-l-4 border-transparent";
-                        if (isZeroStock) {
-                            rowClass = "bg-red-50 hover:bg-red-100 border-l-4 border-l-red-500";
-                        } else if (isLowStock) {
-                            rowClass = "bg-orange-50 hover:bg-orange-100 border-l-4 border-l-orange-400";
-                        }
-
-                        return (
-                            <tr key={p.id} className={rowClass}>
-                                <td className="p-4">
-                                    <div className="font-bold text-gray-800 flex items-center gap-2">
-                                        {p.name}
-                                        {isZeroStock && <AlertTriangle size={16} className="text-red-600" title="Estoque Zerado" />}
-                                        {!isZeroStock && isLowStock && <AlertTriangle size={16} className="text-orange-500" title="Estoque Baixo" />}
-                                    </div>
-                                    <div className="text-xs text-gray-500 flex items-center gap-2 mt-1">
-                                        <span className="bg-gray-100 px-1.5 py-0.5 rounded font-mono">{p.barcode || 'SEM EAN'}</span>
-                                        <span className="text-gray-400">|</span>
-                                        <span>SKU: {p.sku}</span>
-                                    </div>
-                                </td>
-                                <td className="p-4 text-center">
-                                    <span className="inline-block px-2 py-1 bg-gray-100 text-gray-600 rounded-lg text-xs font-medium">
-                                        {p.category}
-                                    </span>
-                                </td>
-                                <td className="p-4 text-center">
-                                    <div className={`inline-flex flex-col items-center px-3 py-1 rounded-lg ${
-                                        isZeroStock ? 'bg-red-100 text-red-700 font-bold' :
-                                        isLowStock ? 'bg-orange-100 text-orange-700' :
-                                        'bg-green-100 text-green-700'
-                                    }`}>
-                                        <span className="font-bold">{p.qty}</span>
-                                        <span className="text-[10px] uppercase">{p.unit}</span>
-                                    </div>
-                                </td>
-                                <td className="p-4 text-right">
-                                    <div className="font-bold text-gray-800">{formatCurrency(p.sellPrice)}</div>
-                                    <div className="text-xs text-gray-400">Custo: {formatCurrency(p.costPrice)}</div>
-                                </td>
-                                <td className="p-4 text-right">
-                                    <span className={`text-xs font-bold ${margin < 20 ? 'text-red-500' : 'text-green-600'}`}>
-                                        {margin.toFixed(0)}%
-                                    </span>
-                                </td>
-                                <td className="p-4 text-center">
-                                    {isAdmin && (
-                                        <div className="flex justify-center gap-2">
-                                            <button onClick={() => { setEditingProduct(p); setIsModalOpen(true); }} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors" title="Editar">
-                                                <Edit size={18} />
-                                            </button>
-                                            <button onClick={() => initiateDelete(p.id)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg transition-colors" title="Excluir">
-                                                <Trash2 size={18} />
-                                            </button>
-                                        </div>
-                                    )}
-                                </td>
-                            </tr>
-                        );
-                    })}
-                </tbody>
-            </table>
-            {filteredProducts.length === 0 && (
-                <div className="p-12 text-center text-gray-400 flex flex-col items-center">
-                    <Search size={48} className="mb-4 opacity-20" />
-                    <p>Nenhum produto encontrado com os filtros atuais.</p>
-                </div>
-            )}
-        </div>
-      </div>
-
-      <Modal 
-         isOpen={isModalOpen} 
-         onClose={() => setIsModalOpen(false)} 
-         title={editingProduct ? "Editar Produto" : "Novo Produto"}
-         size="lg"
-      >
-        <form onSubmit={handleSave} className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Nome do Produto</label>
-                    <input name="name" defaultValue={editingProduct?.name} required className="w-full border rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ex: Arroz Branco Tipo 1" />
-                </div>
-
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Código de Barras (EAN)</label>
-                    <div className="flex gap-2">
-                        <input name="barcode" defaultValue={editingProduct?.barcode} className="w-full border rounded-lg p-3 font-mono" placeholder="789..." />
-                    </div>
-                </div>
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Código Interno (SKU)</label>
-                    <input name="sku" defaultValue={editingProduct?.sku} required className="w-full border rounded-lg p-3 font-mono" placeholder="PROD-001" />
-                </div>
-
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Categoria</label>
-                    <select name="category" defaultValue={editingProduct?.category} className="w-full border rounded-lg p-3 bg-white">
-                        {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                </div>
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Unidade de Medida</label>
-                    <select name="unit" defaultValue={editingProduct?.unit} className="w-full border rounded-lg p-3 bg-white">
-                        {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-                    </select>
-                </div>
-                
-                 <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Fornecedor Principal</label>
-                    <select name="supplierId" defaultValue={editingProduct?.supplierId} className="w-full border rounded-lg p-3 bg-white">
-                        <option value="">Selecione...</option>
-                        {state.suppliers
-                            .sort((a, b) => a.name.localeCompare(b.name))
-                            .map(s => (
-                            <option key={s.id} value={s.id}>{s.name}</option>
-                        ))}
-                    </select>
-                    {state.suppliers.length === 0 && (
-                        <p className="text-xs text-red-500 mt-1">Nenhum fornecedor cadastrado. Cadastre em "Fornecedores".</p>
-                    )}
-                </div>
-                {!editingProduct && (
-                     <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Estoque Inicial</label>
-                        <input type="number" name="qty" defaultValue={0} min="0" className="w-full border rounded-lg p-3" />
-                    </div>
-                )}
-            </div>
-
-            <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
-                <h3 className="text-sm font-bold text-gray-700 mb-3">Precificação e Alertas</h3>
-                <div className="grid grid-cols-3 gap-4">
-                     <div>
-                        <label className="block text-sm font-medium text-gray-500 mb-1">Preço de Custo</label>
-                        <div className="relative">
-                            <span className="absolute left-3 top-3 text-gray-400">R$</span>
-                            <input type="number" step="0.01" name="costPrice" defaultValue={editingProduct?.costPrice} required className="w-full border rounded-lg p-3 pl-9" placeholder="0.00" />
-                        </div>
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-500 mb-1">Preço de Venda</label>
-                        <div className="relative">
-                            <span className="absolute left-3 top-3 text-gray-400">R$</span>
-                            <input type="number" step="0.01" name="sellPrice" defaultValue={editingProduct?.sellPrice} required className="w-full border rounded-lg p-3 pl-9" placeholder="0.00" />
-                        </div>
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-500 mb-1">Estoque Mínimo</label>
-                        <input type="number" name="minQty" defaultValue={editingProduct?.minQty} required className="w-full border rounded-lg p-3" />
-                    </div>
-                </div>
-            </div>
-
-            <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">URL da Imagem (Opcional)</label>
-                <input name="imageUrl" defaultValue={editingProduct?.imageUrl} className="w-full border rounded-lg p-3" placeholder="https://..." />
-            </div>
-
-            <div className="flex justify-end gap-3 pt-4 border-t">
-                <Button variant="secondary" onClick={(e: any) => { e.preventDefault(); setIsModalOpen(false); }}>Cancelar</Button>
-                <Button type="submit">Salvar Produto</Button>
-            </div>
-        </form>
-      </Modal>
-    </div>
-  );
-};
-
-// --- Purchases Component ---
-
-const Purchases = () => {
-    const { state, updateState, notify, logSecurityAction } = useAppContext();
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [viewingOrder, setViewingOrder] = useState<PurchaseOrder | null>(null);
-    const [newOrderSupplierId, setNewOrderSupplierId] = useState('');
-    const [newOrderItems, setNewOrderItems] = useState<{productId: string, qty: number, cost: number}[]>([]);
+      return { ...prev, products: newProducts, movements: newMovements };
+    });
     
-    // Form temporary state
-    const [selectedProduct, setSelectedProduct] = useState('');
-    const [itemQty, setItemQty] = useState(1);
-    const [itemCost, setItemCost] = useState(0);
+    setIsProductModalOpen(false);
+    setEditingProduct(null);
+    setPreviewImage('');
+    showToast('Produto salvo com sucesso!', 'success');
+  };
 
-    const handleAddItem = () => {
-        if (!selectedProduct || itemQty <= 0 || itemCost < 0) return;
-        setNewOrderItems([...newOrderItems, { productId: selectedProduct, qty: itemQty, cost: itemCost }]);
-        setSelectedProduct('');
-        setItemQty(1);
-        setItemCost(0);
-    };
+  const handleStockAdjustment = (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      const formData = new FormData(e.currentTarget);
+      const type = adjustmentType;
+      const qty = Number(formData.get('qty'));
+      const obs = formData.get('obs') as string;
+      
+      // Get new prices if provided (only for 'in' or 'adjustment')
+      const inputCostPrice = formData.get('costPrice') ? Number(formData.get('costPrice')) : null;
+      const inputSellPrice = formData.get('sellPrice') ? Number(formData.get('sellPrice')) : null;
 
-    const handleRemoveItem = (index: number) => {
-        const items = [...newOrderItems];
-        items.splice(index, 1);
-        setNewOrderItems(items);
-    };
+      if (!adjustingProduct) return;
 
-    const handleSaveOrder = () => {
-        if (!newOrderSupplierId || newOrderItems.length === 0) {
-            notify("Selecione um fornecedor e adicione itens.", "error");
-            return;
+      // Validation
+      if (isNaN(qty) || qty <= 0) {
+          showToast('A quantidade deve ser maior que zero.', 'error');
+          return;
+      }
+      if (qty > 99999) {
+          showToast('Quantidade excede o limite de segurança.', 'error');
+          return;
+      }
+
+      if (type === 'out' && adjustingProduct.qty < qty) {
+          showToast(`Estoque insuficiente. Atual: ${adjustingProduct.qty}`, 'error');
+          return;
+      }
+
+      setState(prev => {
+          const newProducts = prev.products.map(p => {
+              if (p.id === adjustingProduct.id) {
+                  let newQty = p.qty;
+                  let newCost = p.costPrice;
+                  let newSell = p.sellPrice;
+
+                  if (type === 'in') {
+                      // Weighted Average Cost Logic
+                      if (inputCostPrice !== null) {
+                          const currentTotalValue = Math.max(0, p.qty) * p.costPrice;
+                          const incomingTotalValue = qty * inputCostPrice;
+                          const totalQty = Math.max(0, p.qty) + qty;
+                          newCost = totalQty > 0 ? (currentTotalValue + incomingTotalValue) / totalQty : inputCostPrice;
+                      }
+                      if (inputSellPrice !== null) {
+                          newSell = inputSellPrice;
+                      }
+                      newQty += qty;
+                  } else if (type === 'out') {
+                      newQty -= qty;
+                  } else {
+                      // Adjustment - overwrite logic could be applied, but standard adjustment usually just fixes qty. 
+                      // If user provided prices in adjustment, we update them.
+                      if (inputCostPrice !== null) newCost = inputCostPrice;
+                      if (inputSellPrice !== null) newSell = inputSellPrice;
+                      newQty = qty; // For 'adjustment', we usually set the exact quantity found
+                  }
+                  
+                  return { ...p, qty: Math.max(0, newQty), costPrice: newCost, sellPrice: newSell };
+              }
+              return p;
+          });
+
+          const movement: StockMovement = {
+              id: Date.now().toString(), productId: adjustingProduct.id, type, qty, date: new Date().toISOString(),
+              userId: prev.currentUser!.id, userName: prev.currentUser!.name, observation: obs
+          };
+          return { ...prev, products: newProducts, movements: [...prev.movements, movement] };
+      });
+
+      setIsAdjustmentModalOpen(false);
+      setAdjustingProduct(null);
+      showToast('Estoque e custos atualizados!', 'success');
+  };
+
+  const handleSaveSupplier = (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      const formData = new FormData(e.currentTarget);
+      const supplierData: Supplier = {
+          id: editingSupplier ? editingSupplier.id : Date.now().toString(),
+          name: formData.get('name') as string,
+          cnpj: formData.get('cnpj') as string,
+          contactName: formData.get('contactName') as string,
+          representativeName: formData.get('representativeName') as string,
+          phone: formData.get('phone') as string,
+          email: formData.get('email') as string,
+          address: formData.get('address') as string,
+      };
+
+      setState(prev => ({
+          ...prev,
+          suppliers: editingSupplier 
+            ? prev.suppliers.map(s => s.id === editingSupplier.id ? supplierData : s)
+            : [...prev.suppliers, supplierData]
+      }));
+      setIsSupplierModalOpen(false);
+      setEditingSupplier(null);
+      showToast('Fornecedor salvo!', 'success');
+  };
+
+  // --- POS LOGIC ---
+  const addToCart = (product: Product) => {
+    if (product.qty <= 0) { showToast('Produto sem estoque!', 'error'); return; }
+    setCart(prev => {
+        const existing = prev.find(item => item.productId === product.id);
+        if (existing) {
+             if (existing.qty + 1 > product.qty) { showToast('Limite de estoque atingido.', 'warning'); return prev; }
+             return prev.map(item => item.productId === product.id ? { ...item, qty: item.qty + 1, total: (item.qty + 1) * item.unitPrice } : item);
         }
+        return [...prev, { productId: product.id, productName: product.name, qty: 1, unitPrice: product.sellPrice, total: product.sellPrice }];
+    });
+    setPosSearch('');
+  };
 
-        const newOrder: PurchaseOrder = {
-            id: Date.now().toString(),
-            supplierId: newOrderSupplierId,
-            status: 'open',
-            dateCreated: new Date().toISOString(),
-            items: newOrderItems
-        };
+  const secureAction = (action: string, payload?: any) => {
+      state.currentUser?.role === 'admin' ? performSecureAction(action, payload) : setShowPinModal({ action, payload });
+  };
 
-        updateState({ orders: [newOrder, ...state.orders] });
-        notify("Pedido de compra criado com sucesso.", "success");
-        setIsModalOpen(false);
-        resetForm();
-    };
+  const performSecureAction = (action: string, payload?: any) => {
+      if (action === 'remove_item') setCart(prev => prev.filter(i => i.productId !== payload));
+      if (action === 'cancel_sale') setCart([]);
+      if (action === 'delete_user') setState(prev => ({...prev, users: prev.users.filter(u => u.id !== payload)}));
+      if (action === 'add_user') setState(prev => ({...prev, users: [...prev.users, payload]}));
+      if (action === 'change_pin') setState(prev => ({...prev, adminPin: payload}));
+      if (action === 'reset_data') { localStorage.removeItem('MERCADO_FACIL_DB_V4'); window.location.reload(); }
+      setShowPinModal(null);
+      showToast('Ação autorizada!', 'success');
+  };
 
-    const resetForm = () => {
-        setNewOrderSupplierId('');
-        setNewOrderItems([]);
-        setSelectedProduct('');
-        setItemQty(1);
-        setItemCost(0);
-        setViewingOrder(null);
-    };
+  const handlePinSubmit = (pin: string) => pin === state.adminPin ? performSecureAction(showPinModal!.action, showPinModal!.payload) : showToast('Senha incorreta', 'error');
 
-    const handleUpdateStatus = (orderId: string, newStatus: 'open' | 'sent' | 'received') => {
-        const order = state.orders.find(o => o.id === orderId);
-        if (!order) return;
+  const finalizeSale = () => {
+      if (cart.length === 0) return;
+      const total = cart.reduce((acc, item) => acc + item.total, 0);
+      const newSale: Sale = {
+          id: Date.now().toString(), items: cart, totalValue: total, paymentMethod, date: new Date().toISOString(), userId: state.currentUser!.id, userName: state.currentUser!.name
+      };
+      
+      const newProducts = [...state.products];
+      const newMovements = [...state.movements];
+      cart.forEach(item => {
+          const idx = newProducts.findIndex(p => p.id === item.productId);
+          if (idx >= 0) {
+              const updatedProduct = { ...newProducts[idx] };
+              updatedProduct.qty = Math.max(0, updatedProduct.qty - item.qty);
+              newProducts[idx] = updatedProduct;
+              
+              newMovements.push({
+                  id: Date.now().toString() + Math.random(), productId: item.productId, type: 'sale', qty: item.qty, date: new Date().toISOString(), userId: state.currentUser!.id, userName: state.currentUser!.name
+              });
+          }
+      });
 
-        if (newStatus === 'received' && order.status !== 'received') {
-            // Process stock update
-            const updatedProducts = [...state.products];
-            const newMovements = [...state.movements];
-            
-            order.items.forEach(item => {
-                const productIndex = updatedProducts.findIndex(p => p.id === item.productId);
-                if (productIndex > -1) {
-                    const product = updatedProducts[productIndex];
-                    // Calculate Weighted Average Cost
-                    const currentTotalValue = product.qty * product.costPrice;
-                    const newItemsValue = item.qty * item.cost;
-                    const newTotalQty = product.qty + item.qty;
-                    const newAvgCost = (currentTotalValue + newItemsValue) / newTotalQty;
+      setState(prev => ({ ...prev, products: newProducts, movements: newMovements, sales: [...prev.sales, newSale] }));
+      setLastSale(newSale); setCart([]); setPosSearch(''); showToast('Venda finalizada!', 'success');
+  };
 
-                    updatedProducts[productIndex] = {
-                        ...product,
-                        qty: newTotalQty,
-                        costPrice: Number(newAvgCost.toFixed(2))
-                    };
+  // --- MENU ITEMS ---
+  const navItems = useMemo(() => {
+      const role = state.currentUser?.role;
+      const items = [
+          { id: 'dashboard', label: 'Visão Geral', icon: <LayoutDashboard size={20}/>, roles: ['admin', 'employee', 'cashier'] },
+          { id: 'inventory', label: 'Estoque', icon: <Package size={20}/>, roles: ['admin', 'employee'] },
+          { id: 'pos', label: 'Caixa / PDV', icon: <ShoppingCart size={20}/>, roles: ['admin', 'employee', 'cashier'] },
+          { id: 'purchases', label: 'Compras', icon: <FileText size={20}/>, roles: ['admin', 'employee'] },
+          { id: 'suppliers', label: 'Fornecedores', icon: <Truck size={20}/>, roles: ['admin', 'employee'] },
+          { id: 'reports', label: 'Relatórios', icon: <BarChart2 size={20}/>, roles: ['admin'] },
+          { id: 'settings', label: 'Configurações', icon: <Settings size={20}/>, roles: ['admin'] },
+      ];
+      return items.filter(i => i.roles.includes(role || ''));
+  }, [state.currentUser]);
 
-                    newMovements.push({
-                        id: Date.now().toString() + item.productId,
-                        productId: item.productId,
-                        type: 'in',
-                        qty: item.qty,
-                        date: new Date().toISOString(),
-                        userId: state.currentUser?.id || 'sys',
-                        userName: state.currentUser?.name || 'Sistema',
-                        observation: `Pedido de Compra #${order.id}`
-                    });
-                }
-            });
 
-            const updatedOrders = state.orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
-            updateState({ 
-                orders: updatedOrders,
-                products: updatedProducts,
-                movements: newMovements
-            });
-            notify(`Pedido #${orderId} recebido! Estoque atualizado.`, "success");
-            logSecurityAction('manual_adjustment', `Recebimento de Pedido #${orderId}`);
-        } else {
-             const updatedOrders = state.orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o);
-             updateState({ orders: updatedOrders });
-             notify(`Status do pedido atualizado para ${newStatus}.`, "success");
-        }
-        setViewingOrder(null);
-    };
+  // --- VIEWS ---
 
-    const getOrderTotal = (items: any[]) => items.reduce((acc, item) => acc + (item.qty * item.cost), 0);
+  const renderDashboard = () => {
+    const lowStockCount = state.products.filter(p => p.qty <= p.minQty).length;
+    const todaySales = state.sales.filter(s => new Date(s.date).toLocaleDateString() === new Date().toLocaleDateString())
+        .reduce((acc, s) => acc + s.totalValue, 0);
+    const salesGoal = 1000;
+    const progress = Math.min((todaySales / salesGoal) * 100, 100);
 
     return (
-        <div className="space-y-6 animate-fade-in">
-             <div className="flex justify-between items-center">
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-800">Compras e Pedidos</h1>
-                    <p className="text-gray-500 text-sm">Gerencie aquisições e entrada de mercadorias.</p>
+        <div className="space-y-6 animate-fade-in pb-10">
+            <h1 className="text-2xl font-bold text-gray-800">Visão Geral</h1>
+            
+            {lowStockCount > 0 && <AlertBanner count={lowStockCount} onClick={() => { if(state.currentUser?.role !== 'cashier') { setActiveTab('inventory'); setSearchTerm(''); } }} />}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+                    <div>
+                        <p className="text-gray-400 text-xs font-bold uppercase tracking-wider">Vendas Hoje</p>
+                        <h3 className="text-2xl font-bold text-gray-800">{formatCurrency(todaySales)}</h3>
+                    </div>
+                    <div className="p-3 bg-blue-50 text-blue-600 rounded-full"><DollarSign size={24}/></div>
                 </div>
-                <Button onClick={() => { resetForm(); setIsModalOpen(true); }}>
-                    <Plus size={20} /> Novo Pedido
-                </Button>
+                {state.currentUser?.role !== 'cashier' && (
+                    <>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+                        <div>
+                            <p className="text-gray-400 text-xs font-bold uppercase tracking-wider">Estoque Total</p>
+                            <h3 className="text-2xl font-bold text-gray-800">{state.products.reduce((acc, p) => acc + p.qty, 0)} itens</h3>
+                        </div>
+                        <div className="p-3 bg-purple-50 text-purple-600 rounded-full"><Package size={24}/></div>
+                    </div>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+                        <div>
+                            <p className="text-gray-400 text-xs font-bold uppercase tracking-wider">Valor em Estoque</p>
+                            <h3 className="text-2xl font-bold text-gray-800">{formatCurrency(state.products.reduce((acc, p) => acc + (p.qty * p.costPrice), 0))}</h3>
+                        </div>
+                        <div className="p-3 bg-green-50 text-green-600 rounded-full"><TrendingUp size={24}/></div>
+                    </div>
+                    </>
+                )}
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
+                    <div>
+                        <p className="text-gray-400 text-xs font-bold uppercase tracking-wider">Produtos Críticos</p>
+                        <h3 className={`text-2xl font-bold ${lowStockCount > 0 ? 'text-red-600' : 'text-gray-800'}`}>{lowStockCount}</h3>
+                    </div>
+                    <div className={`p-3 rounded-full ${lowStockCount > 0 ? 'bg-red-50 text-red-600' : 'bg-gray-50 text-gray-400'}`}><AlertTriangle size={24}/></div>
+                </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-                 <table className="w-full text-left">
-                    <thead className="bg-gray-50 text-gray-600 border-b">
-                        <tr>
-                            <th className="p-4">Data</th>
-                            <th className="p-4">Fornecedor</th>
-                            <th className="p-4 text-center">Itens</th>
-                            <th className="p-4 text-right">Valor Total</th>
-                            <th className="p-4 text-center">Status</th>
-                            <th className="p-4 text-center">Ações</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y text-sm">
-                        {state.orders.map(order => {
-                            const supplier = state.suppliers.find(s => s.id === order.supplierId);
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                    <h3 className="font-bold text-gray-700 mb-4">Meta de Vendas Diária</h3>
+                    <div className="relative h-6 bg-gray-100 rounded-full overflow-hidden mb-2">
+                        <div className="absolute top-0 left-0 h-full bg-blue-500 transition-all duration-1000 ease-out" style={{ width: `${progress}%` }}></div>
+                    </div>
+                    <div className="flex justify-between text-xs font-bold text-gray-500">
+                        <span>{formatCurrency(todaySales)}</span>
+                        <span>Meta: {formatCurrency(salesGoal)}</span>
+                    </div>
+                </div>
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col justify-center gap-3">
+                    <button onClick={() => setActiveTab('pos')} className="w-full bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors"><ShoppingCart/> Abrir Caixa</button>
+                    {state.currentUser?.role !== 'cashier' && <button onClick={() => { setPreSelectedSupplierId(''); setIsPurchaseModalOpen(true); }} className="w-full bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 p-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors"><Truck size={18}/> Novo Pedido</button>}
+                </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-bold text-gray-700">Vendas Recentes</h3>
+                    {state.currentUser?.role === 'admin' && <button onClick={() => setActiveTab('reports')} className="text-blue-600 text-sm font-bold hover:underline">Ver todas</button>}
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                        <thead className="bg-gray-50 text-gray-500"><tr><th className="p-3">Hora</th><th className="p-3">Operador</th><th className="p-3 text-center">Itens</th><th className="p-3 text-right">Valor</th></tr></thead>
+                        <tbody className="divide-y">
+                            {state.sales.slice(-5).reverse().map(s => (
+                                <tr key={s.id}>
+                                    <td className="p-3 text-gray-600">{new Date(s.date).toLocaleTimeString()}</td>
+                                    <td className="p-3 font-medium">{s.userName}</td>
+                                    <td className="p-3 text-center">{s.items.reduce((a,b)=>a+b.qty,0)}</td>
+                                    <td className="p-3 text-right font-bold text-green-600">{formatCurrency(s.totalValue)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                    {state.sales.length === 0 && <p className="text-center text-gray-400 py-4 italic">Nenhuma venda hoje.</p>}
+                </div>
+            </div>
+        </div>
+    );
+  };
+
+  const renderInventory = () => (
+      <div className="space-y-6 animate-fade-in pb-10">
+          <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
+             <div className="flex gap-2 w-full md:w-auto flex-1">
+                 <div className="relative flex-1 group">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                    <input type="text" placeholder="Buscar produto..." className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none transition-all" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+                 </div>
+                 <div className="relative w-48 hidden md:block">
+                     <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                     <select className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg outline-none bg-white focus:ring-2 focus:ring-blue-500 appearance-none" value={filterCategory} onChange={e => setFilterCategory(e.target.value)}>
+                         <option value="">Todas Categorias</option>
+                         {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                     </select>
+                 </div>
+             </div>
+             <div className="flex gap-3 w-full md:w-auto">
+                 <button onClick={async () => { setIsLoadingAi(true); const res = await generateInventoryAnalysis(state.products, state.movements); setAiAnalysis(res); setIsLoadingAi(false); }} className="flex-1 md:flex-none bg-purple-600 text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 hover:bg-purple-700 shadow-sm transition-all active:scale-95">
+                     <Sparkles size={18} /> {isLoadingAi ? '...' : 'IA Insights'}
+                 </button>
+                 {state.currentUser?.role !== 'cashier' && (
+                     <button onClick={() => { setEditingProduct(null); setPreviewImage(''); setIsProductModalOpen(true); }} className="flex-1 md:flex-none bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 hover:bg-blue-700 shadow-sm transition-all active:scale-95">
+                         <Plus size={18} /> Novo
+                     </button>
+                 )}
+             </div>
+          </div>
+          {aiAnalysis && (
+              <div className="bg-purple-50 p-6 rounded-xl border border-purple-200 relative animate-scale-in">
+                  <button onClick={() => setAiAnalysis('')} className="absolute top-4 right-4 text-purple-400 hover:text-purple-600"><X size={18}/></button>
+                  <div className="prose prose-purple text-sm text-gray-700 whitespace-pre-line leading-relaxed">{aiAnalysis}</div>
+              </div>
+          )}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left whitespace-nowrap">
+                    <thead className="bg-gray-50 border-b"><tr><th className="p-4 w-12">Img</th><th className="p-4">Produto</th><th className="p-4 text-center">Cat.</th><th className="p-4 text-center">Estoque</th><th className="p-4 text-right">Preço</th><th className="p-4 text-center">Ações</th></tr></thead>
+                    <tbody className="divide-y">
+                        {state.products.filter(p => (filterCategory ? p.category === filterCategory : true) && (p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.barcode.includes(searchTerm) || p.sku.includes(searchTerm))).map(p => {
+                            const isZero = p.qty === 0;
+                            const isLow = p.qty <= p.minQty;
                             return (
-                                <tr key={order.id} className="hover:bg-gray-50">
-                                    <td className="p-4 text-gray-600">{formatDate(order.dateCreated)}</td>
-                                    <td className="p-4 font-medium text-gray-800">{supplier?.name || 'Desconhecido'}</td>
-                                    <td className="p-4 text-center">{order.items.length}</td>
-                                    <td className="p-4 text-right font-bold">{formatCurrency(getOrderTotal(order.items))}</td>
-                                    <td className="p-4 text-center">
-                                         <span className={`px-2 py-1 rounded-full text-xs font-bold uppercase ${
-                                            order.status === 'received' ? 'bg-green-100 text-green-700' :
-                                            order.status === 'sent' ? 'bg-blue-100 text-blue-700' :
-                                            'bg-yellow-100 text-yellow-700'
-                                        }`}>
-                                            {order.status === 'received' ? 'Recebido' : order.status === 'sent' ? 'Enviado' : 'Aberto'}
-                                        </span>
+                                <tr key={p.id} className={`transition-colors ${isZero ? 'bg-red-50/50' : isLow ? 'bg-orange-50/50' : 'hover:bg-gray-50'}`}>
+                                    <td className="p-4"><div className="w-10 h-10 bg-gray-100 rounded-lg flex items-center justify-center overflow-hidden border">{p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : <Package size={20} className="text-gray-400" />}</div></td>
+                                    <td className="p-4">
+                                        <div className={`font-bold flex items-center gap-2 ${isZero ? 'text-red-700' : isLow ? 'text-orange-700' : 'text-gray-800'}`}>{p.name} {isZero ? <span className="bg-red-100 text-red-600 text-[10px] px-2 rounded-full font-bold">ESGOTADO</span> : isLow ? <span className="bg-orange-100 text-orange-600 text-[10px] px-2 rounded-full font-bold">BAIXO</span> : null}</div>
+                                        <div className="text-xs text-gray-500">SKU: {p.sku} | EAN: {p.barcode}</div>
                                     </td>
-                                    <td className="p-4 text-center">
-                                        <button onClick={() => setViewingOrder(order)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg">
-                                            <FileText size={18} />
-                                        </button>
+                                    <td className="p-4 text-center"><span className="px-2 py-1 bg-gray-100 border rounded text-xs text-gray-600">{p.category}</span></td>
+                                    <td className="p-4 text-center font-bold">{p.qty} <span className="text-xs font-normal text-gray-500">{p.unit}</span></td>
+                                    <td className="p-4 text-right font-medium">{formatCurrency(p.sellPrice)}</td>
+                                    <td className="p-4 text-center flex justify-center gap-1">
+                                        <button onClick={() => setViewingHistoryProduct(p)} className="text-gray-500 hover:bg-gray-100 p-2 rounded-lg" title="Histórico"><History size={18}/></button>
+                                        <button onClick={() => { setAdjustingProduct(p); setAdjustmentType('in'); setIsAdjustmentModalOpen(true); }} className="text-blue-600 hover:bg-blue-50 p-2 rounded-lg" title="Ajuste"><RefreshCcw size={18}/></button>
+                                        {state.currentUser?.role !== 'cashier' && (
+                                            <button onClick={() => { setEditingProduct(p); setPreviewImage(p.imageUrl || ''); setIsProductModalOpen(true); }} className="text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg" title="Editar"><Edit size={18}/></button>
+                                        )}
+                                        {canDelete && (
+                                            <button onClick={() => { if(window.confirm('Excluir?')) setState(prev => ({...prev, products: prev.products.filter(x => x.id !== p.id)})); }} className="text-red-500 hover:bg-red-50 p-2 rounded-lg" title="Excluir"><Trash2 size={18}/></button>
+                                        )}
                                     </td>
                                 </tr>
                             );
                         })}
                     </tbody>
+                </table>
+              </div>
+          </div>
+      </div>
+  );
+
+  const renderPOS = () => (
+      <div className="flex flex-col lg:flex-row h-[calc(100vh-140px)] gap-6 animate-fade-in pb-4">
+          <div className="flex-[2] flex flex-col gap-4">
+              <div className="bg-white p-4 rounded-xl shadow-sm border flex gap-3 items-center">
+                  <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                      <form onSubmit={e => { e.preventDefault(); const p = state.products.find(x => x.barcode === posSearch || x.sku === posSearch || x.name.toLowerCase() === posSearch.toLowerCase()); if(p) addToCart(p); else showToast('Produto não encontrado', 'error'); }}>
+                        <input ref={posInputRef} autoFocus type="text" placeholder="Escanear produto (EAN) ou digitar nome..." className="w-full pl-10 pr-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 text-lg outline-none" value={posSearch} onChange={e => setPosSearch(e.target.value)} />
+                      </form>
+                  </div>
+                  <button onClick={() => setIsScannerOpen(true)} className="bg-gray-800 hover:bg-gray-700 text-white p-3 rounded-lg shadow-sm" title="Abrir Câmera"><Camera size={24} /></button>
+              </div>
+              <div className="bg-white rounded-xl shadow-sm border flex-1 overflow-y-auto p-4 relative">
+                  {cart.length === 0 ? (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-300">
+                          <ShoppingCart size={64} className="mb-4 opacity-50"/>
+                          <p>Carrinho vazio. Escaneie um produto.</p>
+                      </div>
+                  ) : (
+                    <table className="w-full">
+                        <thead className="text-left text-gray-500 text-sm border-b"><tr><th className="pb-2 pl-2">Produto</th><th className="pb-2 text-center">Qtd</th><th className="pb-2 text-right">Total</th><th className="pb-2"></th></tr></thead>
+                        <tbody className="divide-y">
+                            {cart.map((item, idx) => (
+                                <tr key={idx} className="group hover:bg-gray-50">
+                                    <td className="py-3 pl-2 font-medium text-gray-800">{item.productName}</td>
+                                    <td className="py-3 text-center">{item.qty}</td>
+                                    <td className="py-3 text-right font-bold text-gray-800">{formatCurrency(item.total)}</td>
+                                    <td className="py-3 text-right"><button onClick={() => secureAction('remove_item', item.productId)} className="text-gray-300 hover:text-red-500 p-1"><X size={18} /></button></td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                  )}
+              </div>
+          </div>
+          <div className="flex-1 bg-slate-900 text-white rounded-xl shadow-2xl p-6 flex flex-col justify-between">
+              <div>
+                  <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-blue-400"><CreditCard /> Caixa</h2>
+                  <div className="space-y-4 mb-8">
+                      <div className="flex justify-between items-end"><span className="text-slate-400 text-sm">Subtotal</span><span className="font-mono">{formatCurrency(cart.reduce((a, b) => a + b.total, 0))}</span></div>
+                      <div className="flex justify-between text-4xl font-bold text-green-400 pt-6 border-t border-slate-700"><span>Total</span><span>{formatCurrency(cart.reduce((a, b) => a + b.total, 0))}</span></div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 mb-6">
+                      {[{ id: 'cash', label: 'Dinheiro', icon: <Banknote size={18}/> }, { id: 'pix', label: 'PIX', icon: <QrCode size={18}/> }, { id: 'credit', label: 'Crédito', icon: <CreditCard size={18}/> }, { id: 'debit', label: 'Débito', icon: <CreditCard size={18}/> }].map(m => (
+                          <button key={m.id} onClick={() => setPaymentMethod(m.id as any)} className={`p-3 rounded-lg flex items-center justify-center gap-2 text-sm font-medium transition-all border ${paymentMethod === m.id ? 'bg-green-600 border-green-500 text-white shadow-lg' : 'bg-slate-800 border-slate-700 text-slate-400 hover:bg-slate-700'}`}>{m.icon} {m.label}</button>
+                      ))}
+                  </div>
+              </div>
+              <div className="space-y-3">
+                  <button onClick={finalizeSale} disabled={cart.length === 0} className="w-full py-4 bg-green-500 hover:bg-green-600 disabled:opacity-50 text-white rounded-xl font-bold text-lg shadow-lg active:scale-95 transition-all">FINALIZAR VENDA</button>
+                  <button onClick={() => secureAction('cancel_sale')} disabled={cart.length === 0} className="w-full py-3 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-xl font-medium disabled:opacity-50 transition-colors">Cancelar Venda</button>
+              </div>
+          </div>
+      </div>
+  );
+
+  const renderSuppliers = () => (
+      <div className="space-y-6 animate-fade-in pb-10">
+          <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+              <h2 className="text-xl font-bold text-gray-800">Fornecedores</h2>
+              <div className="flex gap-2 w-full md:w-auto">
+                 <div className="relative flex-1 md:w-64">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                    <input type="text" placeholder="Buscar fornecedor..." className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" value={supplierSearch} onChange={e => setSupplierSearch(e.target.value)} />
+                 </div>
+                 <button onClick={() => { setEditingSupplier(null); setIsSupplierModalOpen(true); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex gap-2 hover:bg-blue-700 transition-colors shadow-sm"><Plus size={18} /> Novo</button>
+              </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {state.suppliers.filter(s => s.name.toLowerCase().includes(supplierSearch.toLowerCase()) || s.contactName.toLowerCase().includes(supplierSearch.toLowerCase())).map(s => (
+                  <div key={s.id} className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:border-blue-300 transition-colors group relative flex flex-col">
+                      <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => { setEditingSupplier(s); setIsSupplierModalOpen(true); }} className="p-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors"><Edit size={16}/></button>
+                      </div>
+                      <div className="flex items-center gap-3 mb-4">
+                          <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-lg">{s.name.charAt(0)}</div>
+                          <div><h3 className="font-bold text-lg text-gray-800 leading-tight">{s.name}</h3><p className="text-xs text-gray-500">CNPJ: {s.cnpj}</p></div>
+                      </div>
+                      <div className="space-y-2 text-sm text-gray-600 flex-1">
+                          <p className="flex justify-between border-b border-gray-50 pb-1"><span>Contato:</span> <span className="font-medium text-gray-800">{s.contactName}</span></p>
+                          <p className="flex justify-between border-b border-gray-50 pb-1"><span>Rep:</span> <span className="font-medium text-gray-800">{s.representativeName || '-'}</span></p>
+                          <p className="flex justify-between border-b border-gray-50 pb-1"><span>Tel:</span> <span className="font-medium text-gray-800">{s.phone}</span></p>
+                          <p className="truncate text-xs text-gray-400 pt-1"><span className="font-medium text-gray-500">End:</span> {s.address}</p>
+                          <div className="pt-4 mt-2">
+                              <p className="font-bold text-xs text-gray-500 mb-2 uppercase tracking-wide">Últimos Pedidos</p>
+                              {state.orders.filter(o => o.supplierId === s.id).sort((a,b)=>new Date(b.dateCreated).getTime()-new Date(a.dateCreated).getTime()).slice(0, 3).map(o => (
+                                  <div key={o.id} className="flex justify-between py-1 text-xs"><span>{formatDate(o.dateCreated).split(' ')[0]}</span><span className={`px-1.5 py-0.5 rounded font-bold ${o.status === 'received' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{o.status === 'received' ? 'Entregue' : 'Aberto'}</span></div>
+                              ))}
+                          </div>
+                      </div>
+                      <button onClick={() => openPurchaseForSupplier(s.id)} className="mt-4 w-full py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg font-bold text-sm transition-colors flex items-center justify-center gap-2"><Truck size={14}/> Novo Pedido</button>
+                  </div>
+              ))}
+          </div>
+      </div>
+  );
+
+  const renderPurchases = () => {
+    const [selectedSupplierId, setSelectedSupplierId] = useState(preSelectedSupplierId);
+    const [orderItems, setOrderItems] = useState<{productId: string, qty: number, cost: number}[]>([]);
+
+    useEffect(() => {
+        setSelectedSupplierId(preSelectedSupplierId);
+    }, [preSelectedSupplierId]);
+
+    const createOrder = () => {
+        if (!selectedSupplierId || orderItems.length === 0) return;
+        
+        // Validate items
+        const invalidItems = orderItems.some(i => i.qty <= 0 || i.qty > 99999);
+        if (invalidItems) {
+            showToast('Existem itens com quantidades inválidas (zero, negativo ou excessivo).', 'error');
+            return;
+        }
+
+        const newOrder: PurchaseOrder = {
+            id: Date.now().toString(), supplierId: selectedSupplierId, status: 'open', dateCreated: new Date().toISOString(), items: orderItems
+        };
+        setState(prev => ({ ...prev, orders: [...prev.orders, newOrder] }));
+        setIsPurchaseModalOpen(false);
+        setPreSelectedSupplierId('');
+        setOrderItems([]);
+        showToast('Pedido de compra criado!', 'success');
+    };
+
+    const receiveOrder = (order: PurchaseOrder) => {
+        if (window.confirm('Confirmar recebimento? Isso atualizará o estoque e custos.')) {
+            setState(prev => {
+                const updatedProducts = [...prev.products];
+                const newMovements = [...prev.movements];
+                order.items.forEach(item => {
+                    const prodIdx = updatedProducts.findIndex(p => p.id === item.productId);
+                    if (prodIdx >= 0) {
+                        const p = updatedProducts[prodIdx];
+                        // Weighted Average Cost Calculation (handles negative stock gracefully by assuming 0 base for cost)
+                        const currentQty = Math.max(0, p.qty);
+                        const totalValue = (currentQty * p.costPrice) + (item.qty * item.cost);
+                        const totalQty = currentQty + item.qty;
+                        const newCost = totalQty > 0 ? totalValue / totalQty : item.cost;
+                        
+                        updatedProducts[prodIdx] = { ...p, qty: p.qty + item.qty, costPrice: newCost };
+                        newMovements.push({
+                            id: Date.now().toString() + Math.random(), productId: p.id, type: 'in', qty: item.qty, date: new Date().toISOString(), userId: prev.currentUser!.id, userName: prev.currentUser!.name, observation: `Recebimento Pedido #${order.id}`
+                        });
+                    }
+                });
+                return { ...prev, products: updatedProducts, movements: newMovements, orders: prev.orders.map(o => o.id === order.id ? { ...o, status: 'received' as const } : o) };
+            });
+            showToast(`Pedido recebido! Estoque atualizado para ${order.items.length} itens.`, 'success');
+        }
+    };
+
+    return (
+        <div className="space-y-6 animate-fade-in pb-10">
+            <div className="flex justify-between items-center">
+                <h2 className="text-xl font-bold text-gray-800">Pedidos de Compra</h2>
+                <button onClick={() => { setPreSelectedSupplierId(''); setIsPurchaseModalOpen(true); }} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex gap-2 hover:bg-blue-700 transition-colors shadow-sm"><Plus size={18} /> Novo Pedido</button>
+            </div>
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                 <table className="w-full text-left whitespace-nowrap">
+                     <thead className="bg-gray-50 border-b text-gray-600 font-semibold text-sm"><tr><th className="p-4">Data</th><th className="p-4">Fornecedor</th><th className="p-4 text-center">Itens</th><th className="p-4 text-center">Status</th><th className="p-4 text-right">Total</th><th className="p-4"></th></tr></thead>
+                     <tbody className="divide-y">
+                         {state.orders.length === 0 ? <tr><td colSpan={6} className="p-8 text-center text-gray-400">Nenhum pedido registrado</td></tr> :
+                         state.orders.sort((a,b) => new Date(b.dateCreated).getTime() - new Date(a.dateCreated).getTime()).map(order => {
+                             const supplier = state.suppliers.find(s => s.id === order.supplierId);
+                             const total = order.items.reduce((acc, i) => acc + (i.qty * i.cost), 0);
+                             return (
+                                 <tr key={order.id} className="hover:bg-gray-50 transition-colors">
+                                     <td className="p-4 text-gray-600">{formatDate(order.dateCreated)}</td>
+                                     <td className="p-4 font-medium text-gray-800">{supplier?.name || 'Desconhecido'}</td>
+                                     <td className="p-4 text-center"><span className="bg-gray-100 px-2 py-1 rounded text-xs font-bold text-gray-600">{order.items.length} itens</span></td>
+                                     <td className="p-4 text-center"><span className={`px-2 py-1 rounded text-xs font-bold uppercase ${order.status === 'received' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>{order.status === 'received' ? 'Recebido' : 'Em Aberto'}</span></td>
+                                     <td className="p-4 text-right font-mono">{formatCurrency(total)}</td>
+                                     <td className="p-4 text-right">{order.status === 'open' && <button onClick={() => receiveOrder(order)} className="text-sm bg-green-600 text-white px-3 py-1.5 rounded hover:bg-green-700 font-medium shadow-sm transition-all active:scale-95">Confirmar</button>}</td>
+                                 </tr>
+                             )
+                         })}
+                     </tbody>
                  </table>
             </div>
 
-            {/* Create Order Modal */}
-            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title="Novo Pedido de Compra" size="lg">
-                <div className="space-y-6">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Fornecedor</label>
-                        <select 
-                            className="w-full border rounded-lg p-3 bg-white"
-                            value={newOrderSupplierId}
-                            onChange={(e) => setNewOrderSupplierId(e.target.value)}
-                        >
-                            <option value="">Selecione um fornecedor...</option>
-                            {state.suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                        </select>
-                    </div>
-
-                    <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
-                        <h4 className="font-bold text-gray-700 mb-3 text-sm">Adicionar Produtos</h4>
-                        <div className="flex gap-2 mb-2">
-                             <select 
-                                className="flex-1 border rounded-lg p-2 text-sm"
-                                value={selectedProduct}
-                                onChange={(e) => {
-                                    setSelectedProduct(e.target.value);
-                                    const prod = state.products.find(p => p.id === e.target.value);
-                                    if(prod) setItemCost(prod.costPrice);
-                                }}
-                            >
-                                <option value="">Produto...</option>
-                                {state.products.filter(p => !newOrderSupplierId || p.supplierId === newOrderSupplierId || !p.supplierId).map(p => (
-                                    <option key={p.id} value={p.id}>{p.name}</option>
-                                ))}
-                            </select>
-                            <input 
-                                type="number" min="1" placeholder="Qtd" 
-                                className="w-20 border rounded-lg p-2 text-sm"
-                                value={itemQty} onChange={e => setItemQty(Number(e.target.value))}
-                            />
-                            <input 
-                                type="number" step="0.01" placeholder="Custo" 
-                                className="w-24 border rounded-lg p-2 text-sm"
-                                value={itemCost} onChange={e => setItemCost(Number(e.target.value))}
-                            />
-                            <Button onClick={handleAddItem} className="px-3"><Plus size={16}/></Button>
-                        </div>
-                    </div>
-
-                    <div className="border rounded-lg overflow-hidden">
-                        <table className="w-full text-sm text-left">
-                            <thead className="bg-gray-100">
-                                <tr>
-                                    <th className="p-2">Produto</th>
-                                    <th className="p-2 text-center">Qtd</th>
-                                    <th className="p-2 text-right">Custo Unit.</th>
-                                    <th className="p-2 text-right">Subtotal</th>
-                                    <th className="p-2"></th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {newOrderItems.map((item, idx) => {
-                                    const prod = state.products.find(p => p.id === item.productId);
-                                    return (
-                                        <tr key={idx} className="border-t">
-                                            <td className="p-2">{prod?.name}</td>
-                                            <td className="p-2 text-center">{item.qty}</td>
-                                            <td className="p-2 text-right">{formatCurrency(item.cost)}</td>
-                                            <td className="p-2 text-right">{formatCurrency(item.qty * item.cost)}</td>
-                                            <td className="p-2 text-center">
-                                                <button onClick={() => handleRemoveItem(idx)} className="text-red-500"><Trash2 size={14}/></button>
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                        {newOrderItems.length === 0 && <p className="text-center text-gray-400 py-4 text-sm">Nenhum item adicionado.</p>}
-                    </div>
-                     
-                     <div className="flex justify-between items-center pt-4 border-t">
-                        <div className="text-lg font-bold text-gray-800">Total: {formatCurrency(getOrderTotal(newOrderItems))}</div>
-                        <div className="flex gap-2">
-                             <Button variant="secondary" onClick={() => setIsModalOpen(false)}>Cancelar</Button>
-                             <Button onClick={handleSaveOrder}>Criar Pedido</Button>
-                        </div>
-                    </div>
-                </div>
-            </Modal>
-
-            {/* View/Process Order Modal */}
-            <Modal isOpen={!!viewingOrder} onClose={() => setViewingOrder(null)} title={`Detalhes do Pedido #${viewingOrder?.id.slice(-6)}`} size="lg">
-                {viewingOrder && (
-                    <div className="space-y-6">
-                        <div className="flex justify-between items-start bg-gray-50 p-4 rounded-lg">
+            {isPurchaseModalOpen && (
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-scale-in">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl h-[80vh] flex flex-col">
+                        <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl"><h3 className="font-bold text-gray-800">Novo Pedido</h3><button onClick={() => setIsPurchaseModalOpen(false)}><X size={20}/></button></div>
+                        <div className="p-6 flex-1 overflow-y-auto space-y-6">
                             <div>
-                                <p className="text-sm text-gray-500">Fornecedor</p>
-                                <p className="font-bold text-lg">{state.suppliers.find(s => s.id === viewingOrder.supplierId)?.name}</p>
+                                <label className="block text-sm font-bold mb-2 text-gray-600">Selecione o Fornecedor</label>
+                                <select className="w-full border p-3 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white" value={selectedSupplierId} onChange={e => setSelectedSupplierId(e.target.value)}>
+                                    <option value="">Selecione...</option>
+                                    {state.suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                                </select>
                             </div>
-                            <div className="text-right">
-                                <p className="text-sm text-gray-500">Status Atual</p>
-                                <span className={`inline-block px-3 py-1 rounded-full text-xs font-bold uppercase mt-1 ${
-                                    viewingOrder.status === 'received' ? 'bg-green-100 text-green-700' :
-                                    viewingOrder.status === 'sent' ? 'bg-blue-100 text-blue-700' :
-                                    'bg-yellow-100 text-yellow-700'
-                                }`}>
-                                    {viewingOrder.status === 'received' ? 'Recebido' : viewingOrder.status === 'sent' ? 'Enviado' : 'Em Aberto'}
-                                </span>
-                            </div>
-                        </div>
-
-                         <table className="w-full text-sm text-left border rounded-lg overflow-hidden">
-                            <thead className="bg-gray-100">
-                                <tr>
-                                    <th className="p-3">Produto</th>
-                                    <th className="p-3 text-center">Qtd</th>
-                                    <th className="p-3 text-right">Custo</th>
-                                    <th className="p-3 text-right">Total</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {viewingOrder.items.map((item, idx) => {
-                                    const prod = state.products.find(p => p.id === item.productId);
-                                    return (
-                                        <tr key={idx} className="border-t">
-                                            <td className="p-3">{prod?.name}</td>
-                                            <td className="p-3 text-center">{item.qty}</td>
-                                            <td className="p-3 text-right">{formatCurrency(item.cost)}</td>
-                                            <td className="p-3 text-right">{formatCurrency(item.qty * item.cost)}</td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                             <tfoot className="bg-gray-50 font-bold">
-                                <tr>
-                                    <td colSpan={3} className="p-3 text-right">Total Geral</td>
-                                    <td className="p-3 text-right">{formatCurrency(getOrderTotal(viewingOrder.items))}</td>
-                                </tr>
-                            </tfoot>
-                        </table>
-
-                        {viewingOrder.status !== 'received' && (
-                            <div className="flex justify-end gap-3 pt-4 border-t">
-                                {viewingOrder.status === 'open' && (
-                                    <Button onClick={() => handleUpdateStatus(viewingOrder.id, 'sent')}>
-                                        Marcar como Enviado
-                                    </Button>
-                                )}
-                                <Button variant="success" onClick={() => handleUpdateStatus(viewingOrder.id, 'received')}>
-                                    <Check size={18} /> Confirmar Recebimento (Atualizar Estoque)
-                                </Button>
-                            </div>
-                        )}
-                         {viewingOrder.status === 'received' && (
-                            <div className="bg-green-50 text-green-700 p-4 rounded-lg text-center text-sm">
-                                Este pedido já foi recebido e o estoque foi atualizado.
-                            </div>
-                        )}
-                    </div>
-                )}
-            </Modal>
-        </div>
-    );
-};
-
-// --- POS (Point of Sale) Component ---
-
-const POS = () => {
-    const { state, updateState, notify, logSecurityAction, playSound } = useAppContext();
-    const [cart, setCart] = useState<SaleItem[]>([]);
-    const [searchTerm, setSearchTerm] = useState('');
-    const [paymentModalOpen, setPaymentModalOpen] = useState(false);
-    const [receiptModalOpen, setReceiptModalOpen] = useState(false);
-    const [lastSale, setLastSale] = useState<Sale | null>(null);
-    const [pinModalAction, setPinModalAction] = useState<{ type: 'void_item' | 'void_sale', payload?: any } | null>(null);
-    const [isCameraOpen, setIsCameraOpen] = useState(false);
-    
-    // Scanner focus handling
-    const inputRef = useRef<HTMLInputElement>(null);
-
-    // Keep focus on input for USB scanners
-    useEffect(() => {
-        const interval = setInterval(() => {
-            if (!paymentModalOpen && !receiptModalOpen && !pinModalAction && !isCameraOpen) {
-                inputRef.current?.focus();
-            }
-        }, 1000);
-        return () => clearInterval(interval);
-    }, [paymentModalOpen, receiptModalOpen, pinModalAction, isCameraOpen]);
-
-    const addToCart = (product: Product, qty: number = 1) => {
-        if (product.qty <= 0) {
-            playSound('error');
-            notify(`Produto ${product.name} sem estoque!`, 'error');
-            return;
-        }
-
-        const existingItem = cart.find(item => item.productId === product.id);
-        const currentQtyInCart = existingItem ? existingItem.qty : 0;
-
-        if (currentQtyInCart + qty > product.qty) {
-            playSound('error');
-            notify(`Estoque insuficiente. Disponível: ${product.qty}`, 'error');
-            return;
-        }
-
-        playSound('beep');
-
-        if (existingItem) {
-            setCart(cart.map(item => item.productId === product.id 
-                ? { ...item, qty: item.qty + qty, total: (item.qty + qty) * item.unitPrice } 
-                : item
-            ));
-        } else {
-            setCart([...cart, {
-                productId: product.id,
-                productName: product.name,
-                qty: qty,
-                unitPrice: product.sellPrice,
-                total: product.sellPrice * qty
-            }]);
-        }
-        setSearchTerm('');
-    };
-
-    const handleSearch = (e: React.FormEvent) => {
-        e.preventDefault();
-        const term = searchTerm.trim();
-        if (!term) return;
-
-        // Exact match for barcode first
-        const productByBarcode = state.products.find(p => p.barcode === term);
-        if (productByBarcode) {
-            addToCart(productByBarcode);
-            return;
-        }
-
-        // Exact match by SKU
-        const productBySku = state.products.find(p => p.sku.toLowerCase() === term.toLowerCase());
-        if (productBySku) {
-            addToCart(productBySku);
-            return;
-        }
-        
-        notify("Produto não encontrado via scanner.", "error");
-        setSearchTerm('');
-    };
-
-    const handleCameraScan = (code: string) => {
-         const product = state.products.find(p => p.barcode === code);
-         if (product) {
-             addToCart(product);
-             notify(`${product.name} adicionado!`, 'success');
-         } else {
-             notify(`Código ${code} não encontrado.`, 'error');
-         }
-    };
-
-    const initiateVoidItem = (productId: string) => {
-        setPinModalAction({ type: 'void_item', payload: productId });
-    };
-
-    const initiateVoidSale = () => {
-        if(cart.length === 0) return;
-        setPinModalAction({ type: 'void_sale' });
-    };
-
-    const handleSecuritySuccess = () => {
-        if (!pinModalAction) return;
-
-        if (pinModalAction.type === 'void_item') {
-            const item = cart.find(i => i.productId === pinModalAction.payload);
-            setCart(cart.filter(i => i.productId !== pinModalAction.payload));
-            logSecurityAction('remove_item_pos', `Item removido do PDV: ${item?.productName}`);
-            notify("Item removido.", "info");
-        } else if (pinModalAction.type === 'void_sale') {
-            setCart([]);
-            logSecurityAction('cancel_sale', `Venda cancelada no PDV (Total: ${formatCurrency(cartTotal)})`);
-            notify("Venda cancelada.", "info");
-        }
-        setPinModalAction(null);
-    };
-
-    const cartTotal = cart.reduce((acc, item) => acc + item.total, 0);
-
-    const finalizeSale = (method: 'cash' | 'credit' | 'debit' | 'pix') => {
-        const saleId = Date.now().toString();
-        const sale: Sale = {
-            id: saleId,
-            items: cart,
-            totalValue: cartTotal,
-            paymentMethod: method,
-            date: new Date().toISOString(),
-            userId: state.currentUser?.id || 'sys',
-            userName: state.currentUser?.name || 'Sistema'
-        };
-
-        // Create movements and update products
-        const newMovements: StockMovement[] = cart.map(item => ({
-            id: Date.now().toString() + item.productId,
-            productId: item.productId,
-            type: 'sale',
-            qty: item.qty,
-            date: new Date().toISOString(),
-            userId: state.currentUser?.id || 'sys',
-            userName: state.currentUser?.name || 'Sistema'
-        }));
-
-        const updatedProducts = state.products.map(p => {
-            const soldItem = cart.find(i => i.productId === p.id);
-            if (soldItem) {
-                return { ...p, qty: p.qty - soldItem.qty };
-            }
-            return p;
-        });
-
-        updateState({
-            sales: [...state.sales, sale],
-            movements: [...state.movements, ...newMovements],
-            products: updatedProducts
-        });
-
-        setLastSale(sale);
-        setCart([]);
-        setPaymentModalOpen(false);
-        setReceiptModalOpen(true);
-        playSound('success');
-    };
-
-    return (
-        <div className="flex flex-col h-[calc(100vh-100px)] gap-4 animate-fade-in">
-            <PinModal 
-                isOpen={!!pinModalAction} 
-                onClose={() => setPinModalAction(null)} 
-                onSuccess={handleSecuritySuccess}
-                title="Autorização Gerencial"
-                description={pinModalAction?.type === 'void_sale' ? "Cancelar venda inteira?" : "Remover item do carrinho?"}
-            />
-            
-            {isCameraOpen && <CameraScanner onScan={handleCameraScan} onClose={() => setIsCameraOpen(false)} />}
-
-            {/* Receipt Modal */}
-            <Modal isOpen={receiptModalOpen} onClose={() => setReceiptModalOpen(false)} title="Cupom Fiscal" size="sm">
-                <div className="bg-white p-4 font-mono text-sm border rounded-lg mb-4 shadow-inner bg-yellow-50/20">
-                    <div className="text-center mb-4">
-                        <h3 className="font-bold text-lg">MERCADO FÁCIL</h3>
-                        <p>Rua Exemplo, 123 - Centro</p>
-                        <p>CNPJ: 00.000.000/0001-00</p>
-                        <div className="border-b border-dashed border-gray-400 my-2"></div>
-                        <p>CUPOM NÃO FISCAL</p>
-                    </div>
-                    {lastSale?.items.map((item, idx) => (
-                         <div key={idx} className="flex justify-between mb-1">
-                            <span>{item.qty}x {item.productName.substring(0, 15)}</span>
-                            <span>{formatCurrency(item.total)}</span>
-                        </div>
-                    ))}
-                    <div className="border-b border-dashed border-gray-400 my-2"></div>
-                    <div className="flex justify-between font-bold text-lg">
-                        <span>TOTAL</span>
-                        <span>{formatCurrency(lastSale?.totalValue || 0)}</span>
-                    </div>
-                    <div className="text-right mt-1">
-                        Forma Pagto: {lastSale?.paymentMethod.toUpperCase()}
-                    </div>
-                    <div className="text-center mt-6 text-xs text-gray-500">
-                        {lastSale && formatDate(lastSale.date)}<br/>
-                        Obrigado pela preferência!
-                    </div>
-                </div>
-                <div className="flex justify-center gap-2">
-                    <Button variant="secondary" onClick={() => setReceiptModalOpen(false)}>Fechar</Button>
-                    <Button onClick={() => window.print()}><Printer size={16} /> Imprimir</Button>
-                </div>
-            </Modal>
-
-             {/* Payment Modal */}
-             <Modal isOpen={paymentModalOpen} onClose={() => setPaymentModalOpen(false)} title="Finalizar Venda" size="sm">
-                <div className="text-center mb-6">
-                    <p className="text-gray-500">Total a Pagar</p>
-                    <p className="text-4xl font-bold text-blue-900">{formatCurrency(cartTotal)}</p>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                    <button onClick={() => finalizeSale('cash')} className="p-4 rounded-xl border-2 border-green-100 bg-green-50 hover:bg-green-100 flex flex-col items-center gap-2 transition-colors">
-                        <span className="text-2xl">💵</span>
-                        <span className="font-bold text-green-700">Dinheiro</span>
-                    </button>
-                    <button onClick={() => finalizeSale('credit')} className="p-4 rounded-xl border-2 border-blue-100 bg-blue-50 hover:bg-blue-100 flex flex-col items-center gap-2 transition-colors">
-                        <span className="text-2xl">💳</span>
-                        <span className="font-bold text-blue-700">Crédito</span>
-                    </button>
-                    <button onClick={() => finalizeSale('debit')} className="p-4 rounded-xl border-2 border-orange-100 bg-orange-50 hover:bg-orange-100 flex flex-col items-center gap-2 transition-colors">
-                        <span className="text-2xl">🏧</span>
-                        <span className="font-bold text-orange-700">Débito</span>
-                    </button>
-                    <button onClick={() => finalizeSale('pix')} className="p-4 rounded-xl border-2 border-teal-100 bg-teal-50 hover:bg-teal-100 flex flex-col items-center gap-2 transition-colors">
-                        <span className="text-2xl">💠</span>
-                        <span className="font-bold text-teal-700">PIX</span>
-                    </button>
-                </div>
-            </Modal>
-
-            <div className="flex flex-col md:flex-row gap-4 h-full">
-                {/* Left: Product List */}
-                <div className="flex-1 bg-white rounded-xl shadow-lg border border-gray-200 flex flex-col overflow-hidden">
-                    <div className="p-4 bg-gray-50 border-b flex justify-between items-center">
-                        <h2 className="font-bold text-gray-700 flex items-center gap-2">
-                            <ShoppingCart size={20} /> Carrinho de Compras
-                        </h2>
-                        <span className="bg-blue-100 text-blue-800 text-xs font-bold px-2 py-1 rounded-full">{cart.length} Itens</span>
-                    </div>
-                    <div className="flex-1 overflow-y-auto p-4 space-y-2">
-                        {cart.length === 0 ? (
-                            <div className="h-full flex flex-col items-center justify-center text-gray-300">
-                                <ShoppingCart size={64} className="mb-4 opacity-20" />
-                                <p className="text-lg">Caixa Livre</p>
-                                <p className="text-sm">Aguardando produtos...</p>
-                            </div>
-                        ) : (
-                            cart.map((item, index) => (
-                                <div key={index} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg border hover:border-blue-200 transition-colors">
-                                    <div className="flex items-center gap-3">
-                                        <div className="bg-white w-8 h-8 rounded flex items-center justify-center font-bold text-gray-500 border">{index + 1}</div>
-                                        <div>
-                                            <div className="font-bold text-gray-800">{item.productName}</div>
-                                            <div className="text-xs text-gray-500">{item.qty} x {formatCurrency(item.unitPrice)}</div>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-4">
-                                        <div className="font-bold text-lg text-gray-800">{formatCurrency(item.total)}</div>
-                                        <button onClick={() => initiateVoidItem(item.productId)} className="text-gray-400 hover:text-red-500 p-1">
-                                            <Trash2 size={18} />
-                                        </button>
+                            {selectedSupplierId && (
+                                <div className="border border-blue-100 p-5 rounded-lg bg-blue-50/50">
+                                    <h4 className="font-bold mb-3 text-blue-800 flex items-center gap-2"><Package size={18}/> Produtos do Fornecedor</h4>
+                                    <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+                                        {state.products.filter(p => p.supplierId === selectedSupplierId).map(p => (
+                                            <div key={p.id} className="flex justify-between items-center bg-white p-3 border border-blue-100 rounded-lg shadow-sm">
+                                                <span className="font-medium text-gray-700">{p.name}</span>
+                                                <button onClick={() => setOrderItems(prev => [...prev, { productId: p.id, qty: 10, cost: p.costPrice }])} className="text-blue-600 text-sm font-bold hover:bg-blue-50 px-3 py-1 rounded">+ Add</button>
+                                            </div>
+                                        ))}
                                     </div>
                                 </div>
-                            ))
-                        )}
-                    </div>
-                </div>
-
-                {/* Right: Controls */}
-                <div className="w-full md:w-96 flex flex-col gap-4">
-                    {/* Scanner Input */}
-                    <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-                        <BarcodeScannerMock onScan={(code) => {
-                             const product = state.products.find(p => p.barcode === code);
-                             if(product) addToCart(product);
-                             else notify("Código não encontrado", "error");
-                        }} />
-                        <form onSubmit={handleSearch} className="relative flex gap-2">
-                             <div className="relative flex-1">
-                                <input 
-                                    ref={inputRef}
-                                    type="text" 
-                                    value={searchTerm}
-                                    onChange={e => setSearchTerm(e.target.value)}
-                                    placeholder="Escanear Código..."
-                                    className="w-full pl-10 pr-4 py-4 bg-gray-50 border-2 border-blue-100 rounded-xl focus:ring-4 focus:ring-blue-100 focus:border-blue-500 outline-none font-mono text-lg transition-all"
-                                    autoFocus
-                                />
-                                <Barcode className="absolute left-3 top-5 text-gray-400" />
-                            </div>
-                            <button 
-                                type="button" 
-                                onClick={() => setIsCameraOpen(true)}
-                                className="bg-gray-800 hover:bg-gray-700 text-white px-4 rounded-xl flex items-center justify-center transition-colors"
-                                title="Abrir Câmera"
-                            >
-                                <Camera size={24} />
-                            </button>
-                        </form>
-                    </div>
-
-                    {/* Total & Actions */}
-                    <div className="bg-gray-900 text-white p-6 rounded-xl shadow-lg flex-1 flex flex-col justify-between">
-                        <div>
-                            <div className="flex justify-between items-end mb-2">
-                                <span className="text-gray-400 text-sm uppercase tracking-wider">Total a Pagar</span>
-                                <span className="text-green-400 text-xs">Venda #{state.sales.length + 1}</span>
-                            </div>
-                            <div className="text-5xl font-bold tracking-tight mb-8">
-                                {formatCurrency(cartTotal)}
-                            </div>
-                            
-                            <div className="space-y-2 text-sm text-gray-400 mb-8">
-                                <div className="flex justify-between border-b border-gray-700 pb-2">
-                                    <span>Subtotal</span>
-                                    <span>{formatCurrency(cartTotal)}</span>
+                            )}
+                            {orderItems.length > 0 && (
+                                <div className="bg-gray-50 p-4 rounded-lg space-y-3">
+                                    {orderItems.map((item, idx) => {
+                                        const p = state.products.find(x => x.id === item.productId);
+                                        return (
+                                            <div key={idx} className="flex gap-3 items-center bg-white p-2 rounded border shadow-sm">
+                                                <span className="flex-1 text-sm font-medium">{p?.name}</span>
+                                                <input type="number" min="1" className="w-20 border p-1 rounded text-sm text-center font-bold focus:ring-1 focus:ring-blue-500" value={item.qty} onChange={e => { const val = Math.max(1, Number(e.target.value)); const n = [...orderItems]; n[idx].qty = val; setOrderItems(n); }} />
+                                                <input type="number" className="w-24 border p-1 rounded text-sm text-center" value={item.cost} onChange={e => { const n = [...orderItems]; n[idx].cost = Number(e.target.value); setOrderItems(n); }} />
+                                                <button onClick={() => setOrderItems(prev => prev.filter((_, i) => i !== idx))} className="text-red-400 hover:text-red-600 p-1"><X size={18}/></button>
+                                            </div>
+                                        )
+                                    })}
                                 </div>
-                                <div className="flex justify-between border-b border-gray-700 pb-2">
-                                    <span>Descontos</span>
-                                    <span>R$ 0,00</span>
-                                </div>
-                            </div>
+                            )}
                         </div>
-
-                        <div className="space-y-3">
-                            <button 
-                                onClick={() => setPaymentModalOpen(true)}
-                                disabled={cart.length === 0}
-                                className="w-full bg-green-500 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed text-white py-4 rounded-xl font-bold text-lg shadow-lg shadow-green-900/20 transition-all transform hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2"
-                            >
-                                <Check size={24} /> Finalizar Venda (F2)
-                            </button>
-                            <button 
-                                onClick={initiateVoidSale}
-                                disabled={cart.length === 0}
-                                className="w-full bg-red-500/20 hover:bg-red-500/30 text-red-400 disabled:opacity-50 disabled:cursor-not-allowed py-3 rounded-xl font-medium transition-colors flex items-center justify-center gap-2"
-                            >
-                                <X size={18} /> Cancelar Venda
-                            </button>
+                        <div className="p-4 border-t bg-gray-50 rounded-b-xl flex justify-end">
+                            <button onClick={createOrder} disabled={orderItems.length === 0} className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold disabled:opacity-50 hover:bg-blue-700 shadow-md">Confirmar Pedido</button>
                         </div>
                     </div>
                 </div>
-            </div>
+            )}
         </div>
     );
-};
-
-// --- Stock Control Component ---
-
-const StockControl = () => {
-    const { state, updateState, notify, logSecurityAction } = useAppContext();
-    const [searchTerm, setSearchTerm] = useState('');
-    const [filter, setFilter] = useState<'all' | 'in' | 'out' | 'adjustment'>('all');
-
-    // Add manual adjustment
-    const handleAdjustment = (productId: string, type: 'in' | 'out' | 'adjustment', qty: number, obs: string) => {
-        const product = state.products.find(p => p.id === productId);
-        if(!product) return;
-
-        const newQty = type === 'in' ? product.qty + qty : product.qty - qty;
-        if(newQty < 0) {
-            notify("Estoque não pode ficar negativo.", "error");
-            return;
-        }
-
-        const movement: StockMovement = {
-            id: Date.now().toString(),
-            productId,
-            type,
-            qty,
-            date: new Date().toISOString(),
-            userId: state.currentUser?.id || 'sys',
-            userName: state.currentUser?.name || 'User',
-            observation: obs
-        };
-
-        const updatedProducts = state.products.map(p => p.id === productId ? { ...p, qty: newQty } : p);
-        
-        updateState({
-            products: updatedProducts,
-            movements: [movement, ...state.movements]
-        });
-        
-        logSecurityAction('manual_adjustment', `Ajuste manual: ${type === 'in' ? '+' : '-'}${qty} em ${product.name}`);
-        notify("Estoque ajustado com sucesso.", "success");
-    };
-
-    const filteredMovements = state.movements.filter(m => 
-        (filter === 'all' || m.type === filter) &&
-        state.products.find(p => p.id === m.productId)?.name.toLowerCase().includes(searchTerm.toLowerCase())
-    ).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-    return (
-        <div className="space-y-6 animate-fade-in">
-            <h1 className="text-2xl font-bold text-gray-800">Controle de Estoque</h1>
-            
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="col-span-2 bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                    <h3 className="font-bold text-gray-700 mb-4 flex items-center gap-2">
-                        <History size={20} className="text-blue-500" /> Histórico de Movimentações
-                    </h3>
-                    <div className="flex gap-4 mb-4">
-                        <div className="relative flex-1">
-                             <input 
-                                value={searchTerm} 
-                                onChange={e => setSearchTerm(e.target.value)}
-                                placeholder="Buscar produto..." 
-                                className="w-full pl-10 border rounded-lg p-2"
-                             />
-                             <Search className="absolute left-3 top-2.5 text-gray-400" size={16} />
-                        </div>
-                        <select className="border rounded-lg p-2" value={filter} onChange={(e: any) => setFilter(e.target.value)}>
-                            <option value="all">Todos</option>
-                            <option value="in">Entradas</option>
-                            <option value="out">Saídas</option>
-                            <option value="adjustment">Ajustes</option>
-                            <option value="sale">Vendas</option>
-                        </select>
-                    </div>
-                    <div className="overflow-y-auto max-h-[500px]">
-                        <table className="w-full text-sm text-left">
-                            <thead className="bg-gray-50 sticky top-0">
-                                <tr>
-                                    <th className="p-3">Data/Hora</th>
-                                    <th className="p-3">Produto</th>
-                                    <th className="p-3">Tipo</th>
-                                    <th className="p-3 text-right">Qtd.</th>
-                                    <th className="p-3">Usuário</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y">
-                                {filteredMovements.map(m => {
-                                    const prod = state.products.find(p => p.id === m.productId);
-                                    return (
-                                        <tr key={m.id} className="hover:bg-gray-50">
-                                            <td className="p-3 text-gray-500">{formatDate(m.date)}</td>
-                                            <td className="p-3 font-medium">{prod?.name || 'Produto excluído'}</td>
-                                            <td className="p-3">
-                                                <span className={`px-2 py-1 rounded-full text-xs font-bold uppercase ${
-                                                    m.type === 'in' ? 'bg-green-100 text-green-700' :
-                                                    m.type === 'out' ? 'bg-red-100 text-red-700' :
-                                                    m.type === 'sale' ? 'bg-blue-100 text-blue-700' :
-                                                    'bg-yellow-100 text-yellow-700'
-                                                }`}>
-                                                    {m.type === 'in' ? 'Entrada' : m.type === 'out' ? 'Saída' : m.type === 'sale' ? 'Venda' : 'Ajuste'}
-                                                </span>
-                                            </td>
-                                            <td className="p-3 text-right font-bold">{m.qty}</td>
-                                            <td className="p-3 text-gray-500 text-xs">{m.userName}</td>
-                                        </tr>
-                                    );
-                                })}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-fit">
-                    <h3 className="font-bold text-gray-700 mb-4 flex items-center gap-2">
-                        <Edit size={20} className="text-orange-500" /> Ajuste Rápido
-                    </h3>
-                    <p className="text-sm text-gray-500 mb-4">
-                        Use para correções de inventário, perdas, quebras ou bonificações.
-                    </p>
-                    <AdjustmentForm products={state.products} onAdjust={handleAdjustment} />
-                </div>
-            </div>
-        </div>
-    );
-};
-
-const AdjustmentForm = ({ products, onAdjust }: { products: Product[], onAdjust: (id: string, type: any, qty: number, obs: string) => void }) => {
-    const [selectedId, setSelectedId] = useState('');
-    const [type, setType] = useState('adjustment');
-    const [qty, setQty] = useState(1);
-    const [obs, setObs] = useState('');
-
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        if(selectedId && qty > 0) {
-            onAdjust(selectedId, type, qty, obs);
-            setQty(1);
-            setObs('');
-            setSelectedId('');
-        }
-    }
-
-    return (
-        <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-                <label className="text-xs font-bold text-gray-500 uppercase">Produto</label>
-                <select className="w-full border rounded p-2" value={selectedId} onChange={e => setSelectedId(e.target.value)} required>
-                    <option value="">Selecione...</option>
-                    {products.map(p => <option key={p.id} value={p.id}>{p.name} (Atual: {p.qty})</option>)}
-                </select>
-            </div>
-            <div>
-                <label className="text-xs font-bold text-gray-500 uppercase">Tipo de Ajuste</label>
-                <select className="w-full border rounded p-2" value={type} onChange={e => setType(e.target.value)}>
-                    <option value="in">Entrada (+)</option>
-                    <option value="out">Saída (-)</option>
-                    <option value="adjustment">Correção (Inventário)</option>
-                </select>
-            </div>
-            <div>
-                 <label className="text-xs font-bold text-gray-500 uppercase">Quantidade</label>
-                 <input type="number" min="1" className="w-full border rounded p-2" value={qty} onChange={e => setQty(Number(e.target.value))} />
-            </div>
-             <div>
-                 <label className="text-xs font-bold text-gray-500 uppercase">Motivo / Obs</label>
-                 <input type="text" className="w-full border rounded p-2" value={obs} onChange={e => setObs(e.target.value)} placeholder="Ex: Quebra, Validade..." required />
-            </div>
-            <Button type="submit" className="w-full">Registrar Ajuste</Button>
-        </form>
-    );
-}
-
-// --- Users Component ---
-
-const UsersManagement = () => {
-    const { state, updateState, notify, logSecurityAction } = useAppContext();
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [editingUser, setEditingUser] = useState<User | null>(null);
-
-    const handleSave = (e: React.FormEvent<HTMLFormElement>) => {
-        e.preventDefault();
-        const formData = new FormData(e.currentTarget);
-        
-        const user: User = {
-            id: editingUser ? editingUser.id : Date.now().toString(),
-            name: formData.get('name') as string,
-            role: formData.get('role') as any,
-        };
-
-        const updatedUsers = editingUser 
-            ? state.users.map(u => u.id === user.id ? user : u)
-            : [...state.users, user];
-
-        updateState({ users: updatedUsers });
-        logSecurityAction('user_management', `${editingUser ? 'Editou' : 'Criou'} usuário: ${user.name}`);
-        notify("Usuário salvo com sucesso.", "success");
-        setIsModalOpen(false);
-        setEditingUser(null);
-    };
-
-    const handleDelete = (id: string) => {
-        if (state.users.length <= 1) {
-            notify("Não é possível excluir o último usuário.", "error");
-            return;
-        }
-        updateState({ users: state.users.filter(u => u.id !== id) });
-        logSecurityAction('user_management', `Excluiu usuário ID: ${id}`);
-        notify("Usuário removido.", "success");
-    };
-
-    return (
-        <div className="space-y-6 animate-fade-in">
-             <div className="flex justify-between items-center">
-                <h1 className="text-2xl font-bold text-gray-800">Gestão de Usuários</h1>
-                <Button onClick={() => { setEditingUser(null); setIsModalOpen(true); }}>
-                    <Plus size={20} /> Novo Usuário
-                </Button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {state.users.map(user => (
-                    <div key={user.id} className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                            <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-xl ${
-                                user.role === 'admin' ? 'bg-purple-100 text-purple-600' :
-                                user.role === 'employee' ? 'bg-blue-100 text-blue-600' :
-                                'bg-green-100 text-green-600'
-                            }`}>
-                                {user.name[0]}
-                            </div>
-                            <div>
-                                <h3 className="font-bold text-gray-800">{user.name}</h3>
-                                <span className="text-xs uppercase font-bold tracking-wider text-gray-500">
-                                    {user.role === 'admin' ? 'Gerente' : user.role === 'employee' ? 'Funcionário' : 'Caixa'}
-                                </span>
-                            </div>
-                        </div>
-                        <div className="flex gap-2">
-                            <button onClick={() => { setEditingUser(user); setIsModalOpen(true); }} className="p-2 hover:bg-gray-100 rounded text-blue-600"><Edit size={18} /></button>
-                            <button onClick={() => handleDelete(user.id)} className="p-2 hover:bg-gray-100 rounded text-red-600"><Trash2 size={18} /></button>
-                        </div>
-                    </div>
-                ))}
-            </div>
-
-            <Modal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} title={editingUser ? "Editar Usuário" : "Novo Usuário"}>
-                 <form onSubmit={handleSave} className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Nome Completo</label>
-                        <input name="name" defaultValue={editingUser?.name} required className="mt-1 block w-full border rounded-lg p-2.5" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700">Nível de Acesso</label>
-                        <select name="role" defaultValue={editingUser?.role || 'employee'} className="mt-1 block w-full border rounded-lg p-2.5 bg-white">
-                            <option value="admin">Administrador (Gerente)</option>
-                            <option value="employee">Funcionário (Estoque)</option>
-                            <option value="cashier">Caixa (Vendas)</option>
-                        </select>
-                    </div>
-                    <div className="pt-4 border-t flex justify-end gap-2">
-                        <Button variant="secondary" onClick={(e: any) => { e.preventDefault(); setIsModalOpen(false); }}>Cancelar</Button>
-                        <Button type="submit">Salvar</Button>
-                    </div>
-                 </form>
-            </Modal>
-        </div>
-    );
-};
-
-// --- Suppliers Component ---
-
-const Suppliers = () => {
-  const { state, updateState, notify, logSecurityAction, navigateTo } = useAppContext();
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingSupplier, setEditingSupplier] = useState<Supplier | Partial<Supplier> | null>(null);
-  const [expandedSupplierId, setExpandedSupplierId] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [pinModalOpen, setPinModalOpen] = useState(false);
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-
-  const isAdmin = state.currentUser?.role === 'admin';
-
-  const handleSave = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    
-    const isEditing = editingSupplier && 'id' in editingSupplier;
-    const id = isEditing ? (editingSupplier as Supplier).id : Date.now().toString();
-
-    const newSupplier: Supplier = {
-      id,
-      name: formData.get('name') as string,
-      cnpj: formData.get('cnpj') as string,
-      contactName: formData.get('contactName') as string,
-      representativeName: formData.get('representativeName') as string,
-      phone: formData.get('phone') as string,
-      email: formData.get('email') as string,
-      address: formData.get('address') as string,
-    };
-
-    let updatedSuppliers = [...state.suppliers];
-    if (isEditing) {
-      updatedSuppliers = updatedSuppliers.map(s => s.id === id ? newSupplier : s);
-      notify("Fornecedor atualizado!", "success");
-    } else {
-      updatedSuppliers.push(newSupplier);
-      notify("Fornecedor cadastrado!", "success");
-    }
-
-    updateState({ suppliers: updatedSuppliers });
-    setIsModalOpen(false);
-    setEditingSupplier(null);
   };
 
-   const initiateDelete = (id: string) => {
-    setPendingDeleteId(id);
-    setPinModalOpen(true);
-  }
-
-  const confirmDelete = () => {
-    if(pendingDeleteId) {
-        const s = state.suppliers.find(sup => sup.id === pendingDeleteId);
-        const isUsed = state.products.some(p => p.supplierId === pendingDeleteId);
-        if(isUsed) {
-            notify("Não é possível excluir: existem produtos vinculados.", "error");
-            setPendingDeleteId(null);
-            return;
-        }
-
-        updateState({ suppliers: state.suppliers.filter(sup => sup.id !== pendingDeleteId) });
-        logSecurityAction('user_management', `Fornecedor excluído: ${s?.name}`);
-        notify("Fornecedor removido.", "info");
-        setPendingDeleteId(null);
-    }
-  };
-
-  const getSupplierOrders = (supplierId: string) => {
-    return state.orders
-        .filter(o => o.supplierId === supplierId)
-        .sort((a: PurchaseOrder, b: PurchaseOrder) => new Date(b.dateCreated).getTime() - new Date(a.dateCreated).getTime());
-  };
-
-  const getOrderTotal = (order: PurchaseOrder) => {
-    return order.items.reduce((acc, item) => acc + (item.cost * item.qty), 0);
-  };
-
-  const filteredSuppliers = state.suppliers.filter(s => 
-    s.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    s.contactName.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  return (
-    <div className="space-y-6 animate-fade-in">
-      <PinModal isOpen={pinModalOpen} onClose={() => setPinModalOpen(false)} onSuccess={confirmDelete} title="Excluir Fornecedor" />
-
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-800">Gerenciar Fornecedores</h1>
-        {isAdmin && (
-          <Button onClick={() => { setEditingSupplier(null); setIsModalOpen(true); }}>
-            <Plus size={20} /> Novo Fornecedor
-          </Button>
-        )}
-      </div>
-
-       <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 relative">
-          <input 
-            type="text" 
-            placeholder="Buscar fornecedor por nome ou contato..." 
-            className="w-full pl-10 pr-4 py-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-          <Search className="absolute left-3 top-3.5 text-gray-400" size={20} /> 
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {filteredSuppliers.map(s => (
-            <div key={s.id} className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
-                <div className="flex justify-between items-start mb-4">
-                    <div>
-                        <h3 className="font-bold text-lg text-gray-900">{s.name}</h3>
-                        <p className="text-xs text-gray-500">{s.cnpj}</p>
-                    </div>
-                    <div className="flex gap-1">
-                         <button 
-                            onClick={() => setExpandedSupplierId(expandedSupplierId === s.id ? null : s.id)} 
-                            className={`p-1.5 rounded transition-colors ${expandedSupplierId === s.id ? 'bg-blue-100 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`} 
-                            title="Ver Histórico de Pedidos"
-                         >
-                            <ClipboardList size={16} />
-                         </button>
-                         {isAdmin && (
-                            <>
-                                <button onClick={() => { setEditingSupplier(s); setIsModalOpen(true); }} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded"><Edit size={16} /></button>
-                                <button onClick={() => initiateDelete(s.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded"><Trash2 size={16} /></button>
-                            </>
-                         )}
-                    </div>
-                </div>
-                <div className="space-y-2 text-sm text-gray-600">
-                    <div className="flex items-center gap-2">
-                        <UserIcon size={16} className="text-gray-400" />
-                        <span>Contato: {s.contactName}</span>
-                    </div>
-                    {s.representativeName && (
-                        <div className="flex items-center gap-2">
-                            <div className="w-4 flex justify-center"><Briefcase size={14} className="text-gray-400" /></div>
-                            <span>Rep: {s.representativeName}</span>
-                        </div>
-                    )}
-                    <div className="flex items-center gap-2">
-                        <div className="w-4 flex justify-center"><span className="text-gray-400 text-xs">📞</span></div>
-                        <span>{s.phone}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                         <div className="w-4 flex justify-center"><span className="text-gray-400 text-xs">✉️</span></div>
-                        <span className="truncate max-w-[200px]" title={s.email}>{s.email}</span>
-                    </div>
-                    <div className="flex items-start gap-2">
-                         <div className="w-4 flex justify-center mt-0.5"><span className="text-gray-400 text-xs">📍</span></div>
-                        <span className="text-xs">{s.address}</span>
-                    </div>
-                </div>
-
-                {/* Expandable History Section */}
-                {expandedSupplierId === s.id && (
-                    <div className="mt-4 pt-4 border-t border-gray-100 animate-fade-in">
-                        <div className="flex justify-between items-center mb-3">
-                            <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2">
-                                <History size={16} className="text-blue-500"/> Histórico de Compras
-                            </h4>
-                            <button onClick={() => navigateTo('purchases')} className="text-[10px] bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 flex items-center gap-1">
-                                <Plus size={10} /> Novo Pedido
-                            </button>
-                        </div>
-                        <div className="overflow-x-auto">
-                         {getSupplierOrders(s.id).length > 0 ? (
-                            <table className="w-full text-xs text-left">
-                                <thead className="bg-gray-50 text-gray-600">
-                                    <tr>
-                                        <th className="p-2">Data</th>
-                                        <th className="p-2 text-center">Status</th>
-                                        <th className="p-2 text-center">Itens</th>
-                                        <th className="p-2 text-right">Total</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y">
-                                    {getSupplierOrders(s.id).map(order => (
-                                        <tr key={order.id} className="cursor-pointer hover:bg-gray-50" title="Ver detalhes (em Compras)">
-                                            <td className="p-2">{formatDate(order.dateCreated).split(' ')[0]}</td>
-                                            <td className="p-2 text-center">
-                                                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                                                     order.status === 'received' ? 'bg-green-100 text-green-700' :
-                                                     order.status === 'sent' ? 'bg-blue-100 text-blue-700' :
-                                                     'bg-yellow-100 text-yellow-700'
-                                                 }`}>
-                                                     {order.status === 'received' ? 'Rec' : order.status === 'sent' ? 'Env' : 'Ab'}
-                                                 </span>
-                                            </td>
-                                            <td className="p-2 text-center">{order.items.length}</td>
-                                            <td className="p-2 text-right font-medium">{formatCurrency(getOrderTotal(order))}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                         ) : (
-                            <p className="text-xs text-gray-400 italic text-center py-2">Nenhum pedido encontrado.</p>
-                         )}
-                        </div>
-                    </div>
-                )}
-            </div>
-        ))}
-      </div>
-
-      <Modal 
-         isOpen={isModalOpen} 
-         onClose={() => setIsModalOpen(false)} 
-         title={editingSupplier && 'id' in editingSupplier ? "Editar Fornecedor" : "Novo Fornecedor"}
-      >
-        <form onSubmit={handleSave} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Nome da Empresa</label>
-              <input name="name" defaultValue={editingSupplier?.name} required className="mt-1 block w-full border rounded-lg p-2.5" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-                <div>
-                    <label className="block text-sm font-medium text-gray-700">CNPJ</label>
-                    <input name="cnpj" defaultValue={editingSupplier?.cnpj} required className="mt-1 block w-full border rounded-lg p-2.5" placeholder="00.000.000/0000-00" />
-                </div>
-                 <div>
-                    <label className="block text-sm font-medium text-gray-700">Telefone</label>
-                    <input name="phone" defaultValue={editingSupplier?.phone} required className="mt-1 block w-full border rounded-lg p-2.5" placeholder="(00) 00000-0000" />
-                </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Pessoa de Contato</label>
-                  <input name="contactName" defaultValue={editingSupplier?.contactName} required className="mt-1 block w-full border rounded-lg p-2.5" placeholder="Ex: Financeiro/Atendimento" />
-                </div>
-                 <div>
-                  <label className="block text-sm font-medium text-gray-700">Nome do Representante</label>
-                  <input name="representativeName" defaultValue={editingSupplier?.representativeName} className="mt-1 block w-full border rounded-lg p-2.5" placeholder="Ex: Vendedor Responsável" />
-                </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Email</label>
-              <input type="email" name="email" defaultValue={editingSupplier?.email} className="mt-1 block w-full border rounded-lg p-2.5" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Endereço Completo</label>
-              <input name="address" defaultValue={editingSupplier?.address} required className="mt-1 block w-full border rounded-lg p-2.5" placeholder="Rua, Número, Bairro, Cidade - UF" />
-            </div>
-
-            <div className="flex justify-end gap-3 mt-6 pt-4 border-t">
-                <Button variant="secondary" onClick={(e: any) => { e.preventDefault(); setIsModalOpen(false); }}>Cancelar</Button>
-                <Button type="submit">Salvar Fornecedor</Button>
-            </div>
-        </form>
-      </Modal>
-    </div>
-  );
-};
-
-const Reports = () => {
-    const { state } = useAppContext();
-    const [searchTerm, setSearchTerm] = useState('');
-
-    const inventoryData = state.products.map(p => {
-        const productMovements = state.movements
-            .filter(m => m.productId === p.id)
-            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        
-        const lastMove = productMovements.length > 0 ? productMovements[0].date : null;
-        
-        return {
-            ...p,
-            totalCost: p.qty * p.costPrice,
-            totalSell: p.qty * p.sellPrice,
-            lastMove
-        };
-    }).filter(p => 
-        p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        p.sku.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-
-    const totalStockCost = inventoryData.reduce((acc, curr) => acc + curr.totalCost, 0);
-    const totalStockSell = inventoryData.reduce((acc, curr) => acc + curr.totalSell, 0);
-
-    const exportToCSV = () => {
-        const headers = ["Produto", "SKU", "Categoria", "Estoque Atual", "Unidade", "Custo Unit.", "Venda Unit.", "Total Custo", "Total Venda", "Ultima Movimentacao"];
-        const rows = inventoryData.map(p => [
-            `"${p.name}"`, `"${p.sku}"`, `"${p.category}"`, p.qty, p.unit,
-            p.costPrice.toFixed(2).replace('.', ','), p.sellPrice.toFixed(2).replace('.', ','),
-            p.totalCost.toFixed(2).replace('.', ','), p.totalSell.toFixed(2).replace('.', ','),
-            p.lastMove ? formatDate(p.lastMove) : 'N/A'
-        ]);
-        const csvContent = "\uFEFF" + [headers.join(';'), ...rows.map(r => r.join(';'))].join('\n');
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
+  const renderReports = () => {
+    const exportInventoryCSV = () => {
+        const headers = ['Produto', 'Categoria', 'Estoque', 'Custo', 'Venda', 'Total Custo', 'Total Venda'];
+        const rows = state.products.map(p => [p.name, p.category, p.qty, p.costPrice, p.sellPrice, (p.qty * p.costPrice), (p.qty * p.sellPrice)]);
+        const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
         const link = document.createElement("a");
-        link.setAttribute("href", url);
-        link.setAttribute("download", `inventario_${new Date().toISOString().split('T')[0]}.csv`);
+        link.href = encodeURI(csvContent);
+        link.download = "inventario.csv";
         document.body.appendChild(link);
         link.click();
-        document.body.removeChild(link);
     };
 
+    const paymentData = useMemo(() => {
+        const map = { cash: 0, credit: 0, debit: 0, pix: 0 };
+        state.sales.forEach(s => map[s.paymentMethod] += s.totalValue);
+        return Object.entries(map).map(([name, value]) => ({ name, value }));
+    }, [state.sales]);
+
+    const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042'];
+
+    // Sales Trend (Last 7 Days)
+    const trendData = useMemo(() => {
+        const days = Array.from({length: 7}, (_, i) => {
+            const d = new Date();
+            d.setDate(d.getDate() - (6 - i));
+            return d.toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit'});
+        });
+        return days.map(date => ({
+            date,
+            value: state.sales.filter(s => new Date(s.date).toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit'}) === date).reduce((a, b) => a + b.totalValue, 0)
+        }));
+    }, [state.sales]);
+
+    // Top Selling Products
+    const topProductsData = useMemo(() => {
+        const productSales: {[key: string]: number} = {};
+        state.sales.forEach(s => {
+            s.items.forEach(item => {
+                productSales[item.productName] = (productSales[item.productName] || 0) + item.qty;
+            });
+        });
+        return Object.entries(productSales)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([name, value]) => ({ name, value }));
+    }, [state.sales]);
+
     return (
-        <div className="space-y-6 animate-fade-in">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <h1 className="text-2xl font-bold text-gray-800">Relatórios Gerenciais</h1>
-                <Button onClick={exportToCSV} className="bg-green-600 hover:bg-green-700 text-white">
-                    <Download size={20} /> Exportar CSV
-                </Button>
+        <div className="space-y-6 animate-fade-in pb-10">
+            <h2 className="text-xl font-bold text-gray-800">Relatórios Gerenciais</h2>
+            
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="h-80 bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col relative min-w-0">
+                    <h3 className="font-bold text-gray-700 mb-4">Evolução de Vendas (7 Dias)</h3>
+                    <div className="flex-1 w-full min-h-0">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={trendData}>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                <XAxis dataKey="date" fontSize={12} />
+                                <YAxis fontSize={12} />
+                                <RechartsTooltip />
+                                <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={{r: 4}} activeDot={{r: 8}} />
+                            </LineChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+                <div className="h-80 bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col relative min-w-0">
+                    <h3 className="font-bold text-gray-700 mb-4">Vendas por Pagamento</h3>
+                    <div className="flex-1 w-full min-h-0">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                                <Pie data={paymentData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} fill="#8884d8" paddingAngle={5} dataKey="value">
+                                    {paymentData.map((_, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                                </Pie>
+                                <RechartsTooltip />
+                                <Legend verticalAlign="bottom" height={36}/>
+                            </PieChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+                <div className="h-80 bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col relative min-w-0 lg:col-span-2">
+                    <h3 className="font-bold text-gray-700 mb-4">Top 5 Produtos Mais Vendidos</h3>
+                    <div className="flex-1 w-full min-h-0">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={topProductsData} layout="vertical" margin={{top: 5, right: 30, left: 40, bottom: 5}}>
+                                <CartesianGrid strokeDasharray="3 3" horizontal={false}/>
+                                <XAxis type="number" />
+                                <YAxis type="category" dataKey="name" width={150} tick={{fontSize: 12}} />
+                                <RechartsTooltip />
+                                <Bar dataKey="value" fill="#8884d8" name="Quantidade">
+                                    {topProductsData.map((_, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
+                                </Bar>
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                    <h3 className="text-gray-500 text-sm">Custo Total em Estoque</h3>
-                    <p className="text-2xl font-bold mt-2 text-blue-900">{formatCurrency(totalStockCost)}</p>
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="font-bold text-gray-700 text-lg flex items-center gap-2"><FileText size={20}/> Inventário Detalhado</h3>
+                    <button onClick={exportInventoryCSV} className="flex items-center gap-2 text-green-700 bg-green-50 hover:bg-green-100 border border-green-200 px-4 py-2 rounded-lg font-bold transition-colors">
+                        <FileSpreadsheet size={18}/> Exportar CSV
+                    </button>
                 </div>
-                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                    <h3 className="text-gray-500 text-sm">Valor de Venda Potencial</h3>
-                    <p className="text-2xl font-bold mt-2 text-green-700">{formatCurrency(totalStockSell)}</p>
-                </div>
-            </div>
-
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 relative flex-1 min-h-0 flex flex-col">
-                <h3 className="font-bold text-gray-700 mb-4">Detalhamento de Estoque</h3>
-                <div className="mb-4 relative">
-                     <input 
-                        type="text" 
-                        placeholder="Filtrar por nome..." 
-                        className="w-full pl-10 pr-4 py-2 border rounded-lg outline-none"
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                    />
-                    <Search className="absolute left-3 top-2.5 text-gray-400" size={16} /> 
-                </div>
-                <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                        <thead className="bg-gray-50 text-gray-600 border-b">
+                <div className="overflow-x-auto max-h-96 custom-scrollbar border rounded-lg">
+                    <table className="w-full text-left text-sm whitespace-nowrap">
+                        <thead className="bg-gray-50 text-gray-600 sticky top-0 z-10">
                             <tr>
-                                <th className="p-3">Produto</th>
-                                <th className="p-3 text-center">Qtd.</th>
-                                <th className="p-3 text-right">Custo</th>
-                                <th className="p-3 text-right">Venda</th>
-                                <th className="p-3 text-right">Total (Venda)</th>
+                                <th className="p-3 border-b">Produto</th>
+                                <th className="p-3 border-b text-center">Qtd</th>
+                                <th className="p-3 border-b text-right">Custo Unit.</th>
+                                <th className="p-3 border-b text-right">Venda Unit.</th>
+                                <th className="p-3 border-b text-right font-bold">Total Custo</th>
+                                <th className="p-3 border-b text-right font-bold">Total Venda</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y">
-                            {inventoryData.map(p => (
+                            {state.products.map(p => (
                                 <tr key={p.id} className="hover:bg-gray-50">
-                                    <td className="p-3 font-medium">{p.name}</td>
-                                    <td className="p-3 text-center">{p.qty}</td>
+                                    <td className="p-3">{p.name}</td>
+                                    <td className={`p-3 text-center font-bold ${p.qty <= p.minQty ? 'text-red-600' : ''}`}>{p.qty}</td>
                                     <td className="p-3 text-right">{formatCurrency(p.costPrice)}</td>
                                     <td className="p-3 text-right">{formatCurrency(p.sellPrice)}</td>
-                                    <td className="p-3 text-right font-medium text-green-600">{formatCurrency(p.totalSell)}</td>
+                                    <td className="p-3 text-right font-mono text-gray-600">{formatCurrency(p.qty * p.costPrice)}</td>
+                                    <td className="p-3 text-right font-mono text-blue-600">{formatCurrency(p.qty * p.sellPrice)}</td>
                                 </tr>
                             ))}
                         </tbody>
@@ -1901,476 +1104,306 @@ const Reports = () => {
             </div>
         </div>
     );
-};
-
-const Dashboard = () => {
-    const { state, updateState, notify, navigateTo } = useAppContext();
-    const [analysis, setAnalysis] = useState<string>("");
-    const [loading, setLoading] = useState(false);
-
-    const handleAnalyze = async () => {
-        setLoading(true);
-        const result = await generateInventoryAnalysis(state.products, state.movements);
-        setAnalysis(result);
-        setLoading(false);
-    }
-
-     const handleBackup = () => {
-        const dataStr = JSON.stringify(state);
-        const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
-        const exportFileDefaultName = `mercadofacil_backup_${new Date().toISOString()}.json`;
-        const linkElement = document.createElement('a');
-        linkElement.setAttribute('href', dataUri);
-        linkElement.setAttribute('download', exportFileDefaultName);
-        linkElement.click();
-    };
-
-    const lowStockItems = state.products.filter(p => p.qty <= p.minQty);
-
-    return (
-        <div className="space-y-6 animate-fade-in">
-            <div className="flex justify-between items-center">
-                <h1 className="text-2xl font-bold text-gray-800">Visão Geral</h1>
-                {state.currentUser?.role === 'admin' && (
-                     <Button variant="outline" onClick={handleBackup} className="text-sm px-3 py-1">
-                        <Save size={16} /> Backup Dados
-                    </Button>
-                )}
-            </div>
-
-            {lowStockItems.length > 0 && (
-                <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg mb-6 flex items-start justify-between animate-fade-in shadow-sm">
-                    <div>
-                         <h3 className="font-bold text-red-800 flex items-center gap-2">
-                            <AlertTriangle size={20} /> Atenção: Estoque Crítico
-                         </h3>
-                         <p className="text-sm text-red-700 mt-1">
-                            {lowStockItems.length} produto(s) estão abaixo do nível mínimo. Reposição necessária.
-                         </p>
-                         <ul className="mt-2 text-sm text-red-600 list-disc list-inside max-h-20 overflow-y-auto">
-                            {lowStockItems.slice(0, 3).map(p => (
-                                <li key={p.id}>{p.name} (Atual: {p.qty} / Mín: {p.minQty})</li>
-                            ))}
-                            {lowStockItems.length > 3 && <li>... e mais {lowStockItems.length - 3}</li>}
-                         </ul>
-                    </div>
-                    <Button variant="danger" className="text-sm px-3" onClick={() => navigateTo('purchases')}>
-                        Criar Pedido
-                    </Button>
-                </div>
-            )}
-            
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-6 rounded-xl shadow-lg text-white">
-                    <h3 className="text-blue-100 text-sm mb-1">Total de Produtos</h3>
-                    <p className="text-3xl font-bold">{state.products.length}</p>
-                </div>
-                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                    <h3 className="text-gray-500 text-sm mb-1">Abaixo do Mínimo</h3>
-                    <p className="text-3xl font-bold text-red-500">{state.products.filter(p => p.qty <= p.minQty).length}</p>
-                </div>
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                     <h3 className="text-gray-500 text-sm mb-1">Valor em Estoque</h3>
-                     <p className="text-3xl font-bold text-gray-800">{formatCurrency(state.products.reduce((acc, p) => acc + (p.qty * p.costPrice), 0))}</p>
-                </div>
-                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                     <h3 className="text-gray-500 text-sm mb-1">Vendas Hoje</h3>
-                     <p className="text-3xl font-bold text-green-600">
-                        {formatCurrency(state.sales.filter(s => new Date(s.date).toDateString() === new Date().toDateString()).reduce((acc, s) => acc + s.totalValue, 0))}
-                     </p>
-                </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-96">
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col min-h-0 relative">
-                     <h3 className="font-bold text-gray-700 mb-4">Top 5 Produtos (Estoque)</h3>
-                     <div className="flex-1 min-h-0 min-w-0">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <RechartsBar data={[...state.products].sort((a,b) => b.qty - a.qty).slice(0,5)}>
-                                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                                <XAxis dataKey="name" hide />
-                                <YAxis />
-                                <Tooltip />
-                                <Bar dataKey="qty" fill="#3b82f6" radius={[4,4,0,0]} name="Quantidade" />
-                            </RechartsBar>
-                        </ResponsiveContainer>
-                     </div>
-                </div>
-                
-                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col min-h-0 relative">
-                    <div className="flex justify-between items-center mb-4">
-                        <h3 className="font-bold text-gray-700 flex items-center gap-2">
-                             <span className="text-purple-500">✨</span> IA do Mercado
-                        </h3>
-                        <Button onClick={handleAnalyze} disabled={loading} variant="secondary" className="text-xs">
-                            {loading ? <RefreshCw className="animate-spin" size={16} /> : 'Gerar Análise'}
-                        </Button>
-                    </div>
-                    <div className="flex-1 overflow-y-auto bg-gray-50 rounded-lg p-4 text-sm text-gray-700 leading-relaxed border border-gray-100">
-                        {analysis ? analysis : "Clique em 'Gerar Análise' para receber dicas sobre seu estoque e vendas."}
-                    </div>
-                </div>
-            </div>
-        </div>
-    )
-}
-
-const Login = () => {
-    const { state, updateState } = useAppContext();
-    return (
-        <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-            <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md animate-fade-in">
-                <div className="text-center mb-8">
-                    <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600">
-                        <Package size={32} />
-                    </div>
-                    <h1 className="text-2xl font-bold text-blue-900">Mercado Fácil</h1>
-                    <p className="text-gray-500">Sistema de Gestão Integrado</p>
-                </div>
-                <div className="space-y-3">
-                    {state.users.map(u => (
-                        <button
-                            key={u.id}
-                            onClick={() => updateState({ currentUser: u })}
-                            className="w-full p-4 text-left border rounded-xl hover:bg-blue-50 hover:border-blue-200 transition-all flex items-center gap-3 group"
-                        >
-                            <div className={`p-2 rounded-full ${
-                                u.role === 'admin' ? 'bg-purple-100 text-purple-600' : 
-                                u.role === 'employee' ? 'bg-blue-100 text-blue-600' : 
-                                'bg-green-100 text-green-600'
-                            } group-hover:scale-110 transition-transform`}>
-                                <UserIcon size={20} />
-                            </div>
-                            <div>
-                                <div className="font-bold text-gray-800">{u.name}</div>
-                                <div className="text-xs text-gray-500 capitalize">
-                                    {u.role === 'admin' ? 'Gerente Geral' : u.role === 'employee' ? 'Estoquista' : 'Caixa'}
-                                </div>
-                            </div>
-                        </button>
-                    ))}
-                </div>
-                 <div className="mt-8 text-center text-xs text-gray-400">
-                    v4.0.0 • Seguro & Eficiente
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// --- App Layout & Provider ---
-
-const AppContent = () => {
-  const { state, logout, notify } = useAppContext(); // Added notify
-  const [currentView, setCurrentView] = useState('dashboard');
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-
-  // Expose navigation to context via a hack (in a real app, use router)
-  const { updateState } = useAppContext();
-
-  // Check for low stock on mount/update to send "Push" notification
-  useEffect(() => {
-    if (state.currentUser) {
-        const lowStockCount = state.products.filter(p => p.qty <= p.minQty).length;
-        if (lowStockCount > 0) {
-            // Simple check to avoid spamming if this runs too often, but for this demo:
-            // We delay it slightly so it appears after login
-            const timer = setTimeout(() => {
-                 notify(`Alerta: ${lowStockCount} produtos com estoque baixo ou zerado.`, 'error');
-            }, 1000);
-            return () => clearTimeout(timer);
-        }
-    }
-  }, [state.currentUser, state.products.length]); // Dependency ensures it runs on login or significant product changes
-
-  if (!state.currentUser) return <Login />;
-
-  const NavItem = ({ id, label, icon: Icon, restrictedTo }: any) => {
-      if (restrictedTo && !restrictedTo.includes(state.currentUser?.role)) return null;
-      return (
-        <button
-        onClick={() => { setCurrentView(id); setIsMobileMenuOpen(false); }}
-        className={`w-full flex items-center gap-3 p-3 rounded-lg mb-1 transition-colors ${
-            currentView === id ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
-        }`}
-        >
-        <Icon size={20} />
-        <span>{label}</span>
-        </button>
-    );
   };
 
-  return (
-    <div className="min-h-screen bg-gray-50 flex font-sans">
-        {/* Sidebar */}
-        <div className={`fixed inset-y-0 left-0 bg-gray-900 text-white w-64 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 transition-transform duration-300 z-30 flex flex-col shadow-2xl`}>
-            <div className="p-6 border-b border-gray-800">
-                <h1 className="text-xl font-bold flex items-center gap-2 tracking-tight">
-                    <div className="bg-blue-600 p-1.5 rounded-lg">
-                        <Package className="text-white" size={20} />
-                    </div>
-                     Mercado Fácil
-                </h1>
-            </div>
-            
-            <nav className="flex-1 p-4 overflow-y-auto space-y-1">
-                <div className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-2 mt-2 px-2">Geral</div>
-                <NavItem id="dashboard" label="Visão Geral" icon={LayoutDashboard} />
-                <NavItem id="pos" label="Caixa (PDV)" icon={ShoppingCart} />
-                
-                <div className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-2 mt-6 px-2">Gestão</div>
-                <NavItem id="products" label="Produtos" icon={Package} />
-                <NavItem id="stock" label="Estoque" icon={ClipboardList} restrictedTo={['admin', 'employee']} />
-                <NavItem id="purchases" label="Compras" icon={FileText} restrictedTo={['admin', 'employee']} />
-                <NavItem id="suppliers" label="Fornecedores" icon={Truck} restrictedTo={['admin']} />
-                
-                <div className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-2 mt-6 px-2">Admin</div>
-                <NavItem id="reports" label="Relatórios" icon={BarChart} restrictedTo={['admin']} />
-                <NavItem id="users" label="Usuários" icon={Users} restrictedTo={['admin']} />
-            </nav>
+  const renderSettings = () => {
+      const [newUser, setNewUser] = useState({ name: '', role: 'employee' });
+      const [newPin, setNewPin] = useState('');
+      
+      const addUser = () => {
+          if(!newUser.name) return;
+          secureAction('add_user', { id: Date.now().toString(), name: newUser.name, role: newUser.role });
+          setNewUser({ name: '', role: 'employee' });
+      };
 
-            <div className="p-4 border-t border-gray-800 bg-gray-900/50">
-                <div className="flex items-center gap-3 mb-4 px-2">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center font-bold text-white shadow-lg">
-                        {state.currentUser.name[0]}
-                    </div>
-                    <div className="overflow-hidden">
-                        <div className="font-bold text-sm truncate text-white">{state.currentUser.name}</div>
-                        <div className="text-xs text-gray-400 capitalize flex items-center gap-1">
-                            <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                            {state.currentUser.role === 'admin' ? 'Gerente' : state.currentUser.role === 'employee' ? 'Func.' : 'Caixa'}
-                        </div>
-                    </div>
-                </div>
-                <button onClick={logout} className="w-full flex items-center justify-center gap-2 text-red-400 hover:bg-red-500/10 hover:text-red-300 p-2 rounded-lg text-sm transition-colors">
-                    <LogOut size={16} /> Encerrar Sessão
-                </button>
-            </div>
-        </div>
+      const handleBackup = () => {
+          const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `backup_${new Date().toISOString().split('T')[0]}.json`;
+          a.click();
+      };
 
-        {/* Main Content */}
-        <div className="flex-1 md:ml-64 flex flex-col min-h-screen transition-all">
-            {/* Mobile Header */}
-            <div className="md:hidden bg-white shadow-sm p-4 flex items-center justify-between sticky top-0 z-20 border-b">
-                <button onClick={() => setIsMobileMenuOpen(true)} className="text-gray-600">
-                    <Menu />
-                </button>
-                <span className="font-bold text-gray-800">Mercado Fácil</span>
-                <div className="w-6" />
-            </div>
-
-            <main className="p-4 md:p-8 flex-1 overflow-x-hidden">
-                {currentView === 'dashboard' && <Dashboard />}
-                {currentView === 'pos' && <POS />}
-                {currentView === 'products' && <Products />}
-                {currentView === 'stock' && <StockControl />}
-                {currentView === 'purchases' && <Purchases />}
-                {currentView === 'users' && <UsersManagement />}
-                {currentView === 'suppliers' && <Suppliers />}
-                {currentView === 'reports' && <Reports />}
-            </main>
-        </div>
-        
-        {/* Overlay for mobile menu */}
-        {isMobileMenuOpen && (
-            <div className="fixed inset-0 bg-black/50 z-20 md:hidden backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)} />
-        )}
-    </div>
-  );
-};
-
-const ToastContainer = () => {
-    const [toast, setToast] = useState<{msg: string, type: string} | null>(null);
-    
-    useEffect(() => {
-        const handle = (e: any) => {
-            setToast({ msg: e.detail.message, type: e.detail.type });
-            setTimeout(() => setToast(null), 3000);
-        };
-        window.addEventListener('app-notification', handle);
-        return () => window.removeEventListener('app-notification', handle);
-    }, []);
-
-    if (!toast) return null;
-
-    const colors = {
-        success: 'bg-green-600 border-green-700 text-white',
-        error: 'bg-red-600 border-red-700 text-white',
-        info: 'bg-blue-600 border-blue-700 text-white'
-    };
-
-    return (
-        <div className={`fixed bottom-6 right-6 px-6 py-4 rounded-xl shadow-2xl z-50 animate-bounce-in border flex items-center gap-3 ${colors[toast.type as keyof typeof colors]}`}>
-            {toast.type === 'success' && <Check size={20} />}
-            {toast.type === 'error' && <AlertTriangle size={20} />}
-            <span className="font-medium">{toast.msg}</span>
-        </div>
-    );
-};
-
-export default function App() {
-  const [state, setState] = useState<AppState>(getAppState());
-  // Hack to allow global navigation from nested components
-  const [view, setView] = useState('dashboard');
-
-  const updateState = (newState: Partial<AppState>) => {
-    const updated = { ...state, ...newState };
-    setState(updated);
-    saveAppState(updated);
-  };
-
-  const notify = (message: string, type: 'success' | 'error' | 'info' = 'info') => {
-    const event = new CustomEvent('app-notification', { detail: { message, type } });
-    window.dispatchEvent(event);
-  };
-
-  const logSecurityAction = (action: SecurityAction, description: string, overrideUser?: string) => {
-    const log: any = {
-      id: Date.now().toString(),
-      action,
-      description,
-      userId: state.currentUser?.id || 'system',
-      userName: state.currentUser?.name || 'System',
-      authorizedBy: overrideUser,
-      timestamp: new Date().toISOString()
-    };
-    updateState({ securityLogs: [...state.securityLogs, log] });
-  };
-
-  const logout = () => {
-    updateState({ currentUser: null });
-  };
-
-  // Rewrite AppContent to accept the view state from parent
-  const AppContentWrapper = () => {
-      const { state, logout, notify } = useAppContext(); // Added notify to wrapper
-      const [currentView, setCurrentView] = useState('dashboard');
-      const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-
-      // Listen for navigation events
-      useEffect(() => {
-        const handleNav = (e: any) => {
-            setCurrentView(e.detail);
-        };
-        window.addEventListener('app-navigation', handleNav);
-        return () => window.removeEventListener('app-navigation', handleNav);
-      }, []);
-
-      // Check for low stock on mount/update to send "Push" notification
-      useEffect(() => {
-        if (state.currentUser) {
-            const lowStockCount = state.products.filter(p => p.qty <= p.minQty).length;
-            if (lowStockCount > 0) {
-                // Delay slightly for better UX
-                const timer = setTimeout(() => {
-                     notify(`⚠️ Alerta: ${lowStockCount} produtos com estoque baixo ou zerado.`, 'error');
-                }, 1000);
-                return () => clearTimeout(timer);
-            }
-        }
-      }, [state.currentUser, state.products.length]); 
-
-      if (!state.currentUser) return <Login />;
-
-      const NavItem = ({ id, label, icon: Icon, restrictedTo }: any) => {
-        if (restrictedTo && !restrictedTo.includes(state.currentUser?.role)) return null;
-        return (
-            <button
-            onClick={() => { setCurrentView(id); setIsMobileMenuOpen(false); }}
-            className={`w-full flex items-center gap-3 p-3 rounded-lg mb-1 transition-colors ${
-                currentView === id ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-gray-400 hover:bg-gray-800 hover:text-white'
-            }`}
-            >
-            <Icon size={20} />
-            <span>{label}</span>
-            </button>
-        );
+      const handleRestore = (e: React.ChangeEvent<HTMLInputElement>) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (event) => {
+              try {
+                  const data = JSON.parse(event.target?.result as string);
+                  if (data.users && data.products) { setState(data); showToast('Dados restaurados!', 'success'); }
+              } catch (err) { showToast('Erro ao ler arquivo', 'error'); }
+          };
+          reader.readAsText(file);
       };
 
       return (
-        <div className="min-h-screen bg-gray-50 flex font-sans">
-            <div className={`fixed inset-y-0 left-0 bg-gray-900 text-white w-64 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 transition-transform duration-300 z-30 flex flex-col shadow-2xl`}>
-                <div className="p-6 border-b border-gray-800">
-                    <h1 className="text-xl font-bold flex items-center gap-2 tracking-tight">
-                        <div className="bg-blue-600 p-1.5 rounded-lg">
-                            <Package className="text-white" size={20} />
-                        </div>
-                        Mercado Fácil
-                    </h1>
-                </div>
-                
-                <nav className="flex-1 p-4 overflow-y-auto space-y-1">
-                    <div className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-2 mt-2 px-2">Geral</div>
-                    <NavItem id="dashboard" label="Visão Geral" icon={LayoutDashboard} />
-                    <NavItem id="pos" label="Caixa (PDV)" icon={ShoppingCart} />
-                    
-                    <div className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-2 mt-6 px-2">Gestão</div>
-                    <NavItem id="products" label="Produtos" icon={Package} />
-                    <NavItem id="stock" label="Estoque" icon={ClipboardList} restrictedTo={['admin', 'employee']} />
-                    <NavItem id="purchases" label="Compras" icon={FileText} restrictedTo={['admin', 'employee']} />
-                    <NavItem id="suppliers" label="Fornecedores" icon={Truck} restrictedTo={['admin']} />
-                    
-                    <div className="text-xs font-bold text-gray-600 uppercase tracking-wider mb-2 mt-6 px-2">Admin</div>
-                    <NavItem id="reports" label="Relatórios" icon={BarChart} restrictedTo={['admin']} />
-                    <NavItem id="users" label="Usuários" icon={Users} restrictedTo={['admin']} />
-                </nav>
+          <div className="max-w-4xl mx-auto space-y-8 animate-fade-in pb-10">
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                  <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2 pb-4 border-b"><ShieldAlert size={20} className="text-red-500"/> Segurança</h3>
+                  <div className="flex flex-col md:flex-row gap-4 items-end">
+                      <div className="flex-1 w-full"><label className="text-xs font-bold text-gray-500 mb-1 block uppercase">Novo PIN do Gerente (4 dígitos)</label><input type="password" placeholder="****" className="w-full border p-2.5 rounded-lg focus:ring-2 focus:ring-red-500 outline-none" value={newPin} onChange={e => setNewPin(e.target.value)} maxLength={4} /></div>
+                      <button onClick={() => { if(newPin.length === 4) secureAction('change_pin', newPin); else showToast('O PIN deve ter 4 dígitos', 'warning'); }} className="bg-red-600 hover:bg-red-700 text-white px-6 py-2.5 rounded-lg font-bold transition-colors w-full md:w-auto">Alterar Senha</button>
+                  </div>
+              </div>
 
-                <div className="p-4 border-t border-gray-800 bg-gray-900/50">
-                    <div className="flex items-center gap-3 mb-4 px-2">
-                        <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center font-bold text-white shadow-lg">
-                            {state.currentUser.name[0]}
-                        </div>
-                        <div className="overflow-hidden">
-                            <div className="font-bold text-sm truncate text-white">{state.currentUser.name}</div>
-                            <div className="text-xs text-gray-400 capitalize flex items-center gap-1">
-                                <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                                {state.currentUser.role === 'admin' ? 'Gerente' : state.currentUser.role === 'employee' ? 'Func.' : 'Caixa'}
-                            </div>
-                        </div>
-                    </div>
-                    <button onClick={logout} className="w-full flex items-center justify-center gap-2 text-red-400 hover:bg-red-500/10 hover:text-red-300 p-2 rounded-lg text-sm transition-colors">
-                        <LogOut size={16} /> Encerrar Sessão
-                    </button>
-                </div>
-            </div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                  <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2 pb-4 border-b"><UserIcon size={20} className="text-blue-500"/> Usuários</h3>
+                  <div className="space-y-6">
+                      <div className="flex flex-col md:flex-row gap-3 items-end bg-gray-50 p-5 rounded-xl border border-gray-200">
+                          <div className="flex-1 w-full"><label className="text-xs font-bold text-gray-500 mb-1 block uppercase">Nome</label><input className="w-full border p-2.5 rounded-lg outline-none focus:ring-2 focus:ring-blue-500" value={newUser.name} onChange={e => setNewUser({...newUser, name: e.target.value})} placeholder="Ex: Maria" /></div>
+                          <div className="w-full md:w-48"><label className="text-xs font-bold text-gray-500 mb-1 block uppercase">Função</label><select className="w-full border p-2.5 rounded-lg bg-white outline-none" value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value})}><option value="admin">Administrador</option><option value="employee">Funcionário</option><option value="cashier">Caixa</option></select></div>
+                          <button onClick={addUser} className="bg-blue-600 text-white px-6 py-2.5 rounded-lg font-bold hover:bg-blue-700 w-full md:w-auto">Adicionar</button>
+                      </div>
+                      <div className="divide-y border rounded-xl overflow-hidden">
+                          {state.users.map(u => (
+                              <div key={u.id} className="p-4 flex justify-between items-center bg-white hover:bg-gray-50 transition-colors">
+                                  <div className="flex items-center gap-3">
+                                      <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-white text-xs ${u.role === 'admin' ? 'bg-purple-500' : u.role === 'cashier' ? 'bg-green-500' : 'bg-blue-500'}`}>{u.name.charAt(0)}</div>
+                                      <div><p className="font-bold text-gray-800">{u.name}</p><p className="text-[10px] text-gray-500 uppercase tracking-wide bg-gray-100 px-2 py-0.5 rounded-full inline-block mt-0.5">{u.role === 'employee' ? 'Funcionário' : u.role === 'cashier' ? 'Caixa' : 'Administrador'}</p></div>
+                                  </div>
+                                  {u.id !== state.currentUser?.id && <button onClick={() => secureAction('delete_user', u.id)} className="text-red-400 hover:text-red-600 p-2"><Trash2 size={18}/></button>}
+                              </div>
+                          ))}
+                      </div>
+                  </div>
+              </div>
 
-            <div className="flex-1 md:ml-64 flex flex-col min-h-screen transition-all">
-                <div className="md:hidden bg-white shadow-sm p-4 flex items-center justify-between sticky top-0 z-20 border-b">
-                    <button onClick={() => setIsMobileMenuOpen(true)} className="text-gray-600">
-                        <Menu />
-                    </button>
-                    <span className="font-bold text-gray-800">Mercado Fácil</span>
-                    <div className="w-6" />
-                </div>
-
-                <main className="p-4 md:p-8 flex-1 overflow-x-hidden">
-                    {currentView === 'dashboard' && <Dashboard />}
-                    {currentView === 'pos' && <POS />}
-                    {currentView === 'products' && <Products />}
-                    {currentView === 'stock' && <StockControl />}
-                    {currentView === 'purchases' && <Purchases />}
-                    {currentView === 'users' && <UsersManagement />}
-                    {currentView === 'suppliers' && <Suppliers />}
-                    {currentView === 'reports' && <Reports />}
-                </main>
-            </div>
-            
-            {isMobileMenuOpen && (
-                <div className="fixed inset-0 bg-black/50 z-20 md:hidden backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)} />
-            )}
-        </div>
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                  <h3 className="text-lg font-bold text-gray-800 mb-6 flex items-center gap-2 pb-4 border-b"><Archive size={20} className="text-green-500"/> Dados</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      <button onClick={handleBackup} className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-blue-200 rounded-xl hover:bg-blue-50 transition-all text-blue-500 hover:text-blue-700"><Download size={32} className="mb-2"/><span className="font-bold">Baixar Backup</span></button>
+                      <label className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-green-200 rounded-xl hover:bg-green-50 transition-all text-green-500 hover:text-green-700 cursor-pointer"><Upload size={32} className="mb-2"/><span className="font-bold">Restaurar</span><input type="file" accept=".json" className="hidden" onChange={handleRestore} /></label>
+                      <button onClick={() => secureAction('reset_data')} className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-red-200 rounded-xl hover:bg-red-50 transition-all text-red-500 hover:text-red-700"><RefreshCw size={32} className="mb-2"/><span className="font-bold">Resetar Tudo</span></button>
+                  </div>
+              </div>
+          </div>
       );
-  }
+  };
 
-  const navigateTo = (view: string) => {
-      const event = new CustomEvent('app-navigation', { detail: view });
-      window.dispatchEvent(event);
+  if (!state.currentUser) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 font-inter">
+        <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md border-t-4 border-blue-600 animate-fade-in">
+          <div className="flex justify-center mb-6"><div className="bg-blue-600 p-4 rounded-xl shadow-lg transform -rotate-3"><Package size={48} className="text-white" /></div></div>
+          <h1 className="text-3xl font-bold text-center mb-10 text-gray-800 tracking-tight">Mercado Fácil</h1>
+          <div className="space-y-4">
+            {state.users.map(user => (
+              <button key={user.id} onClick={() => handleLogin(user)} className="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl hover:bg-blue-50 hover:border-blue-300 transition-all flex items-center gap-4 group shadow-sm hover:shadow-md">
+                <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white text-lg font-bold shadow-md transition-transform group-hover:scale-110 ${user.role === 'admin' ? 'bg-purple-500' : user.role === 'cashier' ? 'bg-green-500' : 'bg-blue-500'}`}>{user.name.charAt(0)}</div>
+                <div className="text-left flex-1"><div className="font-bold text-gray-800 text-lg group-hover:text-blue-700 transition-colors">{user.name}</div><div className="text-xs text-gray-500 uppercase tracking-wide font-medium">{user.role === 'employee' ? 'Funcionário' : user.role === 'cashier' ? 'Caixa' : 'Administrador'}</div></div>
+                <ChevronRight className="text-gray-300 group-hover:text-blue-500 group-hover:translate-x-1 transition-all" />
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <AppContext.Provider value={{ state, updateState, notify, logSecurityAction, logout, playSound, navigateTo }}>
-       <AppContentWrapper />
-       <ToastContainer />
-    </AppContext.Provider>
+    <div className="min-h-screen bg-slate-50 flex font-inter text-gray-900">
+      <aside className={`bg-slate-900 text-slate-300 transition-all duration-300 fixed h-full z-20 flex flex-col shadow-2xl ${isSidebarOpen ? 'w-64' : 'w-20'}`}>
+        <div className="h-20 flex items-center justify-between px-4 border-b border-slate-800 bg-slate-950">
+          {isSidebarOpen && <span className="font-bold text-xl text-white tracking-tight flex items-center gap-2"><Package className="text-blue-500"/> Mercado<span className="text-blue-500">Fácil</span></span>}
+          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors"><Menu size={20}/></button>
+        </div>
+        <nav className="flex-1 p-4 space-y-2 overflow-y-auto custom-scrollbar">
+          {navItems.map(item => (
+            <button key={item.id} onClick={() => setActiveTab(item.id)} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all font-medium ${activeTab === item.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50 scale-105 origin-left' : 'hover:bg-slate-800 hover:text-white'}`}>
+              <span className={activeTab === item.id ? 'text-white' : 'text-slate-400'}>{item.icon}</span>
+              {isSidebarOpen && <span>{item.label}</span>}
+            </button>
+          ))}
+        </nav>
+        <div className="p-4 border-t border-slate-800 bg-slate-950">
+           <div className={`flex items-center gap-3 ${!isSidebarOpen && 'justify-center'}`}>
+               <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shadow-lg border-2 border-slate-700 ${state.currentUser.role === 'admin' ? 'bg-purple-500' : state.currentUser.role === 'cashier' ? 'bg-green-500' : 'bg-blue-500'}`}>{state.currentUser.name.charAt(0)}</div>
+               {isSidebarOpen && <div className="flex-1 overflow-hidden"><p className="text-sm font-bold text-white truncate">{state.currentUser.name}</p><button onClick={handleLogout} className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1 mt-1"><LogOut size={10}/> Sair</button></div>}
+           </div>
+        </div>
+      </aside>
+
+      <main className={`flex-1 transition-all duration-300 ${isSidebarOpen ? 'ml-64' : 'ml-20'} p-8 min-w-[768px]`}>
+        {activeTab === 'dashboard' && renderDashboard()}
+        {activeTab === 'inventory' && renderInventory()}
+        {activeTab === 'pos' && renderPOS()}
+        {activeTab === 'suppliers' && renderSuppliers()}
+        {activeTab === 'purchases' && renderPurchases()}
+        {activeTab === 'reports' && renderReports()}
+        {activeTab === 'settings' && renderSettings()}
+      </main>
+
+      {/* Global Modals */}
+      {isProductModalOpen && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-scale-in">
+                  <form onSubmit={handleSaveProduct} className="p-8">
+                      <h2 className="text-2xl font-bold mb-6 text-gray-800">{editingProduct ? 'Editar' : 'Novo'} Produto</h2>
+                      <div className="grid grid-cols-2 gap-6">
+                          <div className="col-span-2">
+                              <label className="block text-sm font-bold mb-2 text-gray-600">Nome do Produto</label>
+                              <input name="name" defaultValue={editingProduct?.name} required className="w-full border p-3 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Ex: Arroz Branco 5kg" />
+                          </div>
+                          
+                          <div className="col-span-2 grid grid-cols-[100px_1fr] gap-4 items-center border p-4 rounded-lg bg-gray-50">
+                              <div className="w-24 h-24 bg-white border rounded-lg flex items-center justify-center overflow-hidden relative group">
+                                   {previewImage ? (
+                                      <img src={previewImage} className="w-full h-full object-cover" />
+                                   ) : (
+                                      <ImageIcon className="text-gray-300"/>
+                                   )}
+                              </div>
+                              <div>
+                                  <label className="block text-sm font-bold mb-1 text-gray-600">Imagem do Produto</label>
+                                  <input 
+                                    type="file" 
+                                    name="imageFile" 
+                                    accept="image/*" 
+                                    onChange={handleImageChange}
+                                    className="text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" 
+                                  />
+                              </div>
+                          </div>
+
+                          <div>
+                              <label className="block text-sm font-bold mb-2 text-gray-600">Categoria</label>
+                              <select name="category" defaultValue={editingProduct?.category} className="w-full border p-3 rounded-lg bg-white outline-none">
+                                  {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                              </select>
+                          </div>
+                          <div>
+                              <label className="block text-sm font-bold mb-2 text-gray-600">Unidade</label>
+                              <select name="unit" defaultValue={editingProduct?.unit} className="w-full border p-3 rounded-lg bg-white outline-none">
+                                  {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                              </select>
+                          </div>
+                          <div><label className="block text-sm font-bold mb-2 text-gray-600">SKU</label><input name="sku" defaultValue={editingProduct?.sku} required className="w-full border p-3 rounded-lg" /></div>
+                          <div><label className="block text-sm font-bold mb-2 text-gray-600">EAN</label><input name="barcode" defaultValue={editingProduct?.barcode} className="w-full border p-3 rounded-lg" placeholder="Gerar auto se vazio" /></div>
+                          <div><label className="block text-sm font-bold mb-2 text-gray-600">Preço Custo (R$)</label><input name="costPrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.costPrice} required disabled={!canEditPrices} className="w-full border p-3 rounded-lg disabled:bg-gray-100 disabled:text-gray-500" /></div>
+                          <div><label className="block text-sm font-bold mb-2 text-gray-600">Preço Venda (R$)</label><input name="sellPrice" type="number" step="0.01" min="0" defaultValue={editingProduct?.sellPrice} required disabled={!canEditPrices} className="w-full border p-3 rounded-lg disabled:bg-gray-100 disabled:text-gray-500" /></div>
+                          {!editingProduct && (
+                              <div className="bg-blue-50 p-3 rounded-lg border border-blue-100">
+                                  <label className="block text-sm font-bold mb-2 text-blue-800">Estoque Inicial</label>
+                                  <input name="qty" type="number" min="0" defaultValue={0} className="w-full border border-blue-200 p-3 rounded-lg" />
+                              </div>
+                          )}
+                          <div><label className="block text-sm font-bold mb-2 text-gray-600">Mínimo (Alerta)</label><input name="minQty" type="number" min="0" defaultValue={editingProduct?.minQty || 5} required className="w-full border p-3 rounded-lg" /></div>
+                          <div className="col-span-2">
+                              <label className="block text-sm font-bold mb-2 text-gray-600">Fornecedor Principal</label>
+                              <select name="supplierId" defaultValue={editingProduct?.supplierId || state.suppliers[0]?.id} className="w-full border p-3 rounded-lg bg-white outline-none">
+                                  {state.suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                              </select>
+                          </div>
+                      </div>
+                      <div className="flex justify-end gap-3 mt-8 pt-6 border-t">
+                          <button type="button" onClick={() => setIsProductModalOpen(false)} className="px-6 py-3 bg-gray-100 rounded-lg font-medium text-gray-600">Cancelar</button>
+                          <button type="submit" className="px-6 py-3 bg-blue-600 text-white rounded-lg font-bold shadow-md">Salvar Produto</button>
+                      </div>
+                  </form>
+              </div>
+          </div>
+      )}
+
+      {isSupplierModalOpen && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-lg animate-scale-in">
+                  <form onSubmit={handleSaveSupplier} className="p-8 space-y-5">
+                      <h2 className="text-2xl font-bold text-gray-800">{editingSupplier ? 'Editar' : 'Novo'} Fornecedor</h2>
+                      <div><label className="text-xs font-bold text-gray-500 uppercase">Empresa</label><input name="name" defaultValue={editingSupplier?.name} required className="w-full border p-3 rounded-lg mt-1" /></div>
+                      <div><label className="text-xs font-bold text-gray-500 uppercase">CNPJ</label><input name="cnpj" defaultValue={editingSupplier?.cnpj} required className="w-full border p-3 rounded-lg mt-1" /></div>
+                      <div className="grid grid-cols-2 gap-4">
+                          <div><label className="text-xs font-bold text-gray-500 uppercase">Contato</label><input name="contactName" defaultValue={editingSupplier?.contactName} required className="w-full border p-3 rounded-lg mt-1" /></div>
+                          <div><label className="text-xs font-bold text-gray-500 uppercase">Rep.</label><input name="representativeName" defaultValue={editingSupplier?.representativeName} className="w-full border p-3 rounded-lg mt-1" /></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                          <div><label className="text-xs font-bold text-gray-500 uppercase">Tel</label><input name="phone" defaultValue={editingSupplier?.phone} required className="w-full border p-3 rounded-lg mt-1" /></div>
+                          <div><label className="text-xs font-bold text-gray-500 uppercase">Email</label><input name="email" defaultValue={editingSupplier?.email} type="email" required className="w-full border p-3 rounded-lg mt-1" /></div>
+                      </div>
+                      <div><label className="text-xs font-bold text-gray-500 uppercase">Endereço</label><input name="address" defaultValue={editingSupplier?.address} className="w-full border p-3 rounded-lg mt-1" /></div>
+                      <div className="flex justify-end gap-3 pt-4">
+                          <button type="button" onClick={() => setIsSupplierModalOpen(false)} className="px-6 py-2 bg-gray-100 rounded-lg text-gray-600 font-medium">Cancelar</button>
+                          <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold">Salvar</button>
+                      </div>
+                  </form>
+              </div>
+          </div>
+      )}
+
+      {isAdjustmentModalOpen && adjustingProduct && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-xl w-96 p-6 animate-scale-in">
+                  <h3 className="font-bold text-lg mb-4 text-gray-800">Ajuste de Estoque</h3>
+                  <p className="text-sm text-gray-500 mb-4 bg-gray-50 p-2 rounded">Produto: <strong>{adjustingProduct.name}</strong> <br/> Atual: {adjustingProduct.qty} {adjustingProduct.unit}</p>
+                  <form onSubmit={handleStockAdjustment}>
+                      <div className="mb-4">
+                          <label className="block text-sm font-bold mb-2 text-gray-600">Tipo</label>
+                          <div className="grid grid-cols-3 gap-2">
+                              <label className="border rounded-lg p-2 text-center cursor-pointer hover:bg-gray-50 has-[:checked]:bg-blue-50 has-[:checked]:border-blue-500">
+                                  <input type="radio" name="type" value="in" className="hidden" checked={adjustmentType === 'in'} onChange={() => setAdjustmentType('in')} />
+                                  <span className="text-sm font-bold">Entrada</span>
+                              </label>
+                              <label className="border rounded-lg p-2 text-center cursor-pointer hover:bg-gray-50 has-[:checked]:bg-blue-50 has-[:checked]:border-blue-500">
+                                  <input type="radio" name="type" value="out" className="hidden" checked={adjustmentType === 'out'} onChange={() => setAdjustmentType('out')} />
+                                  <span className="text-sm font-bold">Saída</span>
+                              </label>
+                              <label className="border rounded-lg p-2 text-center cursor-pointer hover:bg-gray-50 has-[:checked]:bg-blue-50 has-[:checked]:border-blue-500">
+                                  <input type="radio" name="type" value="adjustment" className="hidden" checked={adjustmentType === 'adjustment'} onChange={() => setAdjustmentType('adjustment')} />
+                                  <span className="text-sm font-bold">Ajuste</span>
+                              </label>
+                          </div>
+                      </div>
+                      
+                      <div className="mb-4"><label className="block text-sm font-bold mb-2 text-gray-600">Quantidade</label><input name="qty" type="number" min="1" required className="w-full border p-3 rounded-lg text-lg font-bold text-center" autoFocus /></div>
+                      
+                      {(adjustmentType === 'in' || adjustmentType === 'adjustment') && (
+                          <div className="grid grid-cols-2 gap-3 mb-4 animate-fade-in">
+                              <div><label className="block text-xs font-bold mb-1 text-gray-500">Novo Custo (Unit.)</label><input name="costPrice" type="number" step="0.01" min="0" placeholder={adjustingProduct.costPrice.toString()} className="w-full border p-2 rounded-lg" /></div>
+                              <div><label className="block text-xs font-bold mb-1 text-gray-500">Novo Venda (Unit.)</label><input name="sellPrice" type="number" step="0.01" min="0" placeholder={adjustingProduct.sellPrice.toString()} className="w-full border p-2 rounded-lg" /></div>
+                          </div>
+                      )}
+
+                      <div className="mb-6"><label className="block text-sm font-bold mb-2 text-gray-600">Motivo</label><input name="obs" placeholder="Ex: Inventário, Perda..." className="w-full border p-3 rounded-lg" required /></div>
+                      <div className="flex justify-end gap-2"><button type="button" onClick={() => setIsAdjustmentModalOpen(false)} className="px-4 py-2 bg-gray-100 rounded-lg text-gray-600 font-medium">Cancelar</button><button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg font-bold">Confirmar</button></div>
+                  </form>
+              </div>
+          </div>
+      )}
+      
+      {viewingHistoryProduct && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl h-[70vh] flex flex-col animate-scale-in">
+                  <div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl"><div><h3 className="font-bold text-gray-800">Histórico</h3><p className="text-sm text-gray-500">{viewingHistoryProduct.name}</p></div><button onClick={() => setViewingHistoryProduct(null)}><X size={20}/></button></div>
+                  <div className="flex-1 overflow-y-auto p-0">
+                      <table className="w-full text-left text-sm">
+                          <thead className="bg-gray-50 sticky top-0 text-gray-500"><tr><th className="p-4">Data</th><th className="p-4">Tipo</th><th className="p-4 text-center">Qtd</th><th className="p-4">Obs</th><th className="p-4 text-right">Usuário</th></tr></thead>
+                          <tbody className="divide-y">
+                              {state.movements.filter(m => m.productId === viewingHistoryProduct.id).sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(m => (
+                                  <tr key={m.id} className="hover:bg-gray-50">
+                                      <td className="p-4 text-gray-600">{formatDate(m.date)}</td>
+                                      <td className="p-4"><span className={`px-2 py-1 rounded text-xs font-bold uppercase ${m.type === 'in' ? 'bg-green-100 text-green-700' : m.type === 'out' || m.type === 'sale' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>{m.type === 'in' ? 'Entrada' : m.type === 'sale' ? 'Venda' : m.type === 'out' ? 'Saída' : 'Ajuste'}</span></td>
+                                      <td className="p-4 text-center font-bold text-gray-800">{m.qty}</td>
+                                      <td className="p-4 text-gray-500 italic truncate max-w-[150px]">{m.observation || (m.type === 'sale' ? 'Venda PDV' : '-')}</td>
+                                      <td className="p-4 text-right text-gray-600">{m.userName.split(' ')[0]}</td>
+                                  </tr>
+                              ))}
+                              {state.movements.filter(m => m.productId === viewingHistoryProduct.id).length === 0 && <tr><td colSpan={5} className="p-8 text-center text-gray-400">Nenhuma movimentação</td></tr>}
+                          </tbody>
+                      </table>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {isScannerOpen && <CameraScanner onScan={(code) => { 
+          const p = state.products.find(x => x.barcode === code); 
+          if(p) { addToCart(p); showToast(`Adicionado: ${p.name}`, 'success'); } else { showToast(`Código ${code} não encontrado`, 'warning'); }
+      }} onClose={() => setIsScannerOpen(false)} />}
+      
+      {lastSale && <ReceiptModal sale={lastSale} onClose={() => setLastSale(null)} />}
+      {showPinModal && <PinModal onSubmit={handlePinSubmit} onClose={() => setShowPinModal(null)} />}
+      {toast && <Toast message={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
+    </div>
   );
 }
