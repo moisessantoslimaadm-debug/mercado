@@ -684,7 +684,7 @@ export default function App() {
                  </div>
              </div>
              <div className="flex gap-3 w-full md:w-auto">
-                 <button onClick={async () => { setIsLoadingAi(true); const res = await generateInventoryAnalysis(state.products, state.movements); setAiAnalysis(res); setIsLoadingAi(false); }} className="flex-1 md:flex-none bg-purple-600 text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 hover:bg-purple-700 shadow-sm transition-all active:scale-95">
+                 <button onClick={async () => { setIsLoadingAi(true); const res = await generateInventoryAnalysis(state.products, state.movements, state.sales); setAiAnalysis(res); setIsLoadingAi(false); }} className="flex-1 md:flex-none bg-purple-600 text-white px-4 py-2 rounded-lg flex items-center justify-center gap-2 hover:bg-purple-700 shadow-sm transition-all active:scale-95">
                      <Sparkles size={18} /> {isLoadingAi ? '...' : 'IA Insights'}
                  </button>
                  {state.currentUser?.role !== 'cashier' && (
@@ -886,7 +886,7 @@ export default function App() {
                 });
                 return { ...prev, products: updatedProducts, movements: newMovements, orders: prev.orders.map(o => o.id === order.id ? { ...o, status: 'received' as const } : o) };
             });
-            showToast(`Pedido recebido! Estoque atualizado para ${order.items.length} itens.`, 'success');
+            showToast(`Estoque atualizado com sucesso! ${order.items.length} produtos processados.`, 'success');
         }
     };
 
@@ -1135,7 +1135,7 @@ export default function App() {
                   if (data.users && data.products) { setState(data); showToast('Dados restaurados!', 'success'); }
               } catch (err) { showToast('Erro ao ler arquivo', 'error'); }
           };
-          reader.readAsText(file);
+          reader.readAsDataURL(file);
       };
 
       return (
